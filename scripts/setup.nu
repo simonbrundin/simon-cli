@@ -1,7 +1,7 @@
 #!/usr/bin/env nu
 
 # Setup my Mac
-def "main setup mac" [] {
+def "main bootstrap mac" [] {
   # Installera Homebrew ifall det saknas
     if (which brew | is-empty) == true {
         print $"(ansi red) Homebrew saknas, installera det först (ansi reset)"
