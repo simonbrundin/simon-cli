@@ -15,7 +15,7 @@ def "main ci" [
   let startingDirectory = (pwd)
   match $project {
     "plan" => {
-            cd /Users/simon/repos/deployment-pipeline/dagger-modules/pipeline 
+      cd /Users/simon/repos/deployment-pipeline/dagger-modules/pipeline 
       (dagger call ci
         --image-name plan 
         --registry-address ghcr.io/simonbrundin 
