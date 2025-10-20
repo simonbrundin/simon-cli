@@ -15,6 +15,7 @@ def "main ci" [
   let startingDirectory = (pwd)
   match $project {
     "plan" => {
+      # GITHUB_TOKEN måste sättas
       cd /Users/simon/repos/deployment-pipeline/dagger-modules/pipeline 
       (dagger call ci
         --image-name plan 
