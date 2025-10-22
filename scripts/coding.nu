@@ -1,9 +1,19 @@
 #!/usr/bin/env nu
 
+# Starta utvecklingsmijö i aktuell mapp
+def "main dev" [] {
+  with-env { SHELL: "/bin/bash" } {
+    # -l för login-shell så PATH initieras korrekt
+    bash -lc $"devpod up ."
+  }
+}
+
+
 # Logga in mot Vault
 def "main login vault" [] {
   vault login -method=userpass username=simonbrundin password=(bw get password a2041c06-1cb1-4eb5-a609-b35300c9d21a)
 } 
+
 
 # Kör tester i projektet du befinner dig i
 def "main test" [] {
