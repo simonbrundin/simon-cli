@@ -2,10 +2,18 @@
 
 # Starta utvecklingsmijö i aktuell mapp
 def "main dev" [] {
-  with-env { SHELL: "/bin/bash" } {
-    # -l för login-shell så PATH initieras korrekt
-    bash -lc $"devpod up ."
+  print $"(ansi blue) Letar efter .devcontainer.json...(ansi reset)"
+  let files = ls -a | where name == ".devcontainer.json"
+  if ($files | length) > 0 {
+print $"(ansi green) .devcontainer.json hittades!(ansi reset)"
+  } else {
+print $"(ansi red) .devcontainer.json hittades inte!(ansi reset)"
   }
+
+  let devpodCommand = "devpod up . --provider kubernetes --debug"
+print $"(ansi blue)Kör `($devpodCommand)`(ansi reset)"
+  nu -c $"SHELL=/bin/bash ($devpodCommand)"
+
 }
 
 

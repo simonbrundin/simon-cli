@@ -3,7 +3,7 @@
 
 # Konvertera symlink till Chezmoi
 def "main chezmoi convert symlink" [] {
-let path = input "Ange sökväg till symlink:"
+let path = input "Ange sökväg till symlink: "
 rsync -aL -- $path $"($path).real"  # kopierar det symlinken pekar på
 mv $path $"($path).symlink_backup"      # spara symlinken ifall du vill ångra
 mv $"($path).real" $path                 # ersätt med riktig fil

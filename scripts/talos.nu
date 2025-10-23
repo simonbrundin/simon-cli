@@ -90,21 +90,24 @@ def "main talos update config" [nodnamn?: string] {
     
     # Bygg upp 'talosctl gen config'-kommandot som en lista av strängar.
     # Detta är den mest robusta metoden för att hantera argument i Nushell.
-    let base_cmd = [
+    mut base_cmd = [
       "talosctl" "gen" "config"
       $cluster_name
       $endpoint
-      $"--output-types=($output_types)" # Korrekt interpolation av output_types
+      $"--output-types=($output_types)"
       "--with-docs=false"
       "--with-examples=false"
       "--config-patch-control-plane=@patches/controlplane.yaml"
       "--config-patch-worker=@patches/worker.yaml"
-      $"--config-patch-worker=@patches/disks/($node.name).yaml"
       "-o" $config_dir
       "--with-secrets=secrets.yaml"
       "--force"
       "--config-patch=@patches/all.yaml"
     ]
+
+    if $node.role == "worker" {
+      $base_cmd = ($base_cmd | append $"--config-patch-worker=@patches/disks/($node.name).yaml")
+    }
 
     # Lägg till nodspecifika patchar om de finns
     let full_cmd = if ($nodePatches | is-empty) {
