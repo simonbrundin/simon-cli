@@ -73,7 +73,7 @@ def "main bootstrap mac" [] {
     print $"(ansi blue) Installing packages (ansi reset)"
         # Add taps  
         brew tap arl/arl   
-        brew bundle --file $"($env.dotfiles-path)/brew/Brewfile"
+        brew bundle --file $"($env.dotfiles-path)/brew/.Brewfile"
     
     # Uppdatera alla Home
     brew update

@@ -175,4 +175,3 @@ Following the project's `simon commit` workflow:
 💘 Generated with Crush
 Co-Authored-By: 💘 Crush <crush@charm.land></content>
 <parameter name="file_path">CRUSH.md
-

@@ -5,7 +5,7 @@ def "main install" [package] {
 
     brew install $package
     brew upgrade
-  brew bundle dump --file $"($env.dotfiles-path)/brew/Brewfile" --force
+  brew bundle dump --file $"($env.dotfiles-path)/brew/.Brewfile" --force
 }
 
 # Kort: Install
@@ -21,6 +21,6 @@ def "main uninstall" [package] {
     brew uninstall $package
     brew upgrade
 
-  brew bundle dump --file $"($env.dotfiles-path)/brew/Brewfile" --force
+  brew bundle dump --file $"($env.dotfiles-path)/brew/.Brewfile" --force
 }
 

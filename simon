@@ -177,4 +177,26 @@ def "main list cron" [] {
   crontab -l
 }
 
+# Starta Kanata
+
+def "main kanata start" [] {
+    systemctl --user start kanata
+  }
+
+# Starta om Kanata 
+def "main kanata restart" [] {
+
+
+
+
+
+  systemctl --user restart kanata
+}
+
+# Testa Kanata
+def "main kanata test" [] {
+cat /home/simon/repos/dotfiles/kanata/.config/kanata/kanata.kbd | cb 
+strt "https://jtroo.github.io/"
+}
+
 
