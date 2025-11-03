@@ -2,6 +2,7 @@
 
 source scripts/setup.nu
 source scripts/workflow.nu
+source scripts/git.nu
 source scripts/coding.nu
 source scripts/talos.nu
 source scripts/ai.nu
