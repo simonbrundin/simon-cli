@@ -18,6 +18,12 @@ print $"(ansi blue)Kör `($devpodCommand)`(ansi reset)"
 
 }
 
+# Delete Devpod
+def "main devpod delete" [] {
+  let selectedDevpod = (devpod list | ansi strip | lines | skip 3 | each { |line| $line | split row '|' | get 0 | str trim } | str join "\n" | ^fzf)
+  devpod delete $selectedDevpod
+}
+
 
 # Logga in mot Vault
 def "main login vault" [] {
