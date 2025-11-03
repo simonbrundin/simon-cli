@@ -10,7 +10,9 @@ print $"(ansi green) .devcontainer.json hittades!(ansi reset)"
 print $"(ansi red) .devcontainer.json hittades inte!(ansi reset)"
   }
 
-  let devpodCommand = "devpod up . --provider kubernetes --debug"
+  # let selectedProvider = (devpod provider list | ansi strip | lines | skip 3 | each { |line| $line | split row '|' | get 0 | str trim } | str join "\n" | ^fzf)
+
+  let devpodCommand = "devpod up ."
 print $"(ansi blue)Kör `($devpodCommand)`(ansi reset)"
   nu -c $"SHELL=/bin/bash ($devpodCommand)"
 
