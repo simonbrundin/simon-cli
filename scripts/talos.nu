@@ -8,7 +8,7 @@
 def "main talos dashboard" [
     ip = "10.10.10.11"      # Node IP-adress
 ] {
-  let nodes = (open /Users/simon/repos/infrastructure/talos/nodes.yaml | get nodes)
+  let nodes = (open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes)
   mut nodesString = ""
   for node in $nodes {
     if ($node.initialized == true) {
@@ -42,7 +42,7 @@ def "main talos upgrade" [] {
 # Uppdatera Talos-config för alla noder eller en specifik nod
 def "main talos update config" [nodnamn?: string] {
   # Gå till rätt katalog där dina Talos-filer (nodes.yaml, secrets.yaml, patches/) finns
-  cd /Users/simon/repos/infrastructure/talos
+  cd /home/simon/repos/infrastructure/talos
 
   # Ladda YAML-filen med nodinformation
   let nodes = (open nodes.yaml | get nodes)
@@ -162,8 +162,8 @@ def "main talos update config" [nodnamn?: string] {
 def "main talos health" [] {
 
   # Skapa listor för controlplane och worker noder
-  let controlplanes = open /Users/simon/Repos/infrastructure/talos/nodes.yaml | get nodes | where role == "controlplane" | get ip | str join ','
-  let workers = open /Users/simon/Repos/infrastructure/talos/nodes.yaml | get nodes | where role == "worker" | get ip | str join ','
+  let controlplanes = open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "controlplane" | get ip | str join ','
+  let workers = open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "worker" | get ip | str join ','
   print $controlplanes
   print $workers
   # Kör talosctl health-kommandot
@@ -174,16 +174,16 @@ def "main talos health" [] {
 
 # Talos health
 def "main talos update kubeconfig" [] {
-    let controlplanes = open /Users/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "controlplane" | get ip | str join ','
+    let controlplanes = open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "controlplane" | get ip | str join ','
 
- talosctl kubeconfig /Users/simon/repos/infrastructure/talos/kubeconfig
+ talosctl kubeconfig /home/simon/repos/infrastructure/talos/kubeconfig
 }
 
 # Reboot all Talos nodes
 def "main talos reboot all" [] {
 
-  let controlplanes = open /Users/simon/Repos/infrastructure/talos/nodes.yaml | get nodes | where role == "controlplane" | get ip | str join ','
-  let workers = open /Users/simon/Repos/infrastructure/talos/nodes.yaml | get nodes | where role == "worker" | get ip | str join ','
+  let controlplanes = open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "controlplane" | get ip | str join ','
+  let workers = open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "worker" | get ip | str join ','
   let nodes = $controlplanes + "," + $workers
   talosctl reboot -n $nodes 
 }
