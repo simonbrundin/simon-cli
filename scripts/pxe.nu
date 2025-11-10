@@ -49,10 +49,10 @@ def "main pxe debug tftp" [] {
 
 # TODO: Installera om PXE-server
 def "main setup pxe" [] {
-  # VPN:a till datacenter
-  networksetup -connectpppoeservice "UniFi Teleport"
-  print $"VPN status: ((networksetup -showpppoestatus 'UniFi Teleport' | lines | get 0))"
-  print "----------------------------------------------"
+  # # VPN:a till datacenter
+  # networksetup -connectpppoeservice "UniFi Teleport"
+  # print $"VPN status: ((networksetup -showpppoestatus 'UniFi Teleport' | lines | get 0))"
+  # print "----------------------------------------------"
   # Ge användaren sudo-rättigheter
 
   ssh pxe -t 'echo "$USER ALL=(ALL:ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/$USER'
