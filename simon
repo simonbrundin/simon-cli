@@ -12,6 +12,7 @@ source scripts/pxe.nu
 source scripts/ceph.nu
 source scripts/kubernetes.nu
 
+use functions.nu 
 def main [] {
   let banner = "
   ╔════════════════════════════════════════════════════════════════════════╗
@@ -39,14 +40,6 @@ def main [] {
   do { nu -c $"simon ($selectedCommand)" }
 }
 
-def fzfSelect [list: list] {
-  let selection = ($list | str join "\n" | fzf --multi | lines)
-  if ($selection | length) == 1 {
-    return ($selection | first)
-  } else {
-    return $selection
-  }
-}
 # Dokumentation
 def "main docs" [] {
     let options = [
