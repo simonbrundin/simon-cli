@@ -3,6 +3,16 @@
 # Kort: Kubernetes
 def "main k" [...args] { simon kubernetes ...$args }
 
+def "main kubernetes login teleport" [clusterName = ""] {
+  # Kommandon direkt från Teleport
+  # tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com
+  # export KUBECONFIG=${HOME?}/teleport-kubeconfig.yaml
+  # tsh kube login cluster1
+  # kubectl get pods
+ 
+  tsh kube login cluster1
+}
+
 # Kubernetes Dashboard
 def "main kubernetes dashboard" [] {
   if ((simon ip | to text) | str contains "192.168.4.1") {

@@ -44,6 +44,17 @@ def "main talos update config" [nodnamn?: string] {
   # Gå till rätt katalog där dina Talos-filer (nodes.yaml, secrets.yaml, patches/) finns
   cd /home/simon/repos/infrastructure/talos
 
+    # Hämta inloggningsuppgifter mot Talos från 1Password
+    # Skapa .op-katalogen om den inte finns
+    mkdir ~/.op
+    chmod 700 ~/.op
+    op signin --raw | save ~/.op/session --force
+  print (pwd)
+  ls
+    op read op://talos/secrets/secrets.yaml -o secrets.yaml -f
+    op read op://talos/talosconfig/talosconfig -o talosconfig -f
+   chmod 666 secrets.yaml
+ chmod 666 talosconfig
   # Ladda YAML-filen med nodinformation
   let nodes = (open nodes.yaml | get nodes)
   let cluster_name = "cluster1"
@@ -86,7 +97,8 @@ def "main talos update config" [nodnamn?: string] {
     }
 
     # Bestäm vilken output-typ som ska genereras (worker, controlplane, eller båda)
-    let output_types = "controlplane,worker"
+    let output_types = "controlplane,worker,talosconfig"
+
     
     # Bygg upp 'talosctl gen config'-kommandot som en lista av strängar.
     # Detta är den mest robusta metoden för att hantera argument i Nushell.
@@ -133,6 +145,7 @@ def "main talos update config" [nodnamn?: string] {
       print $"FEL: Konfigurationsfilen ($config_file) skapades INTE! Kontrollera Talosctl-utdata ovan."
       continue # Gå till nästa nod om filen inte finns
     }
+     
 
     # Applicera konfigurationen på noden
     if $node.initialized == false {
@@ -140,12 +153,14 @@ def "main talos update config" [nodnamn?: string] {
       talosctl apply-config --insecure --nodes $node.ip --file $config_file
     } else {
       print $"Noden ($node.ip) är redan initialiserad, applicerar konfigurationen."
-      talosctl apply-config --nodes $node.ip --file $config_file
+      # talosctl --talosconfig generated/talosconfig apply-config --nodes $node.ip --file $config_file --endpoints $endpoint
+      talosctl --talosconfig talosconfig apply-config --nodes $node.ip --file $config_file
+      print "klart"
     }
 
     # Namnge noden
     print $"Namnger noden ($node.ip) till ($node.name)"
-    talosctl patch mc -p $'{"machine":{"network":{"hostname":"($node.name)"}}}' -n $node.ip
+    talosctl --talosconfig talosconfig patch mc -p $'{"machine":{"network":{"hostname":"($node.name)"}}}' -n $node.ip
 
     print "-----------------------------"
   }
@@ -156,6 +171,8 @@ def "main talos update config" [nodnamn?: string] {
     $"Konfiguration har applicerats på noden ($nodnamn)."
   }
   print $message
+  # rm secrets.yaml
+    # rm -rf $config_dir
 }
 
 # Talos health
