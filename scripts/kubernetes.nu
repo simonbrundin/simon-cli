@@ -5,12 +5,18 @@ def "main k" [...args] { simon kubernetes ...$args }
 
 def "main kubernetes login teleport" [clusterName = ""] {
   # Kommandon direkt från Teleport
+bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com"
   # tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com
-  # export KUBECONFIG=${HOME?}/teleport-kubeconfig.yaml
-  # tsh kube login cluster1
-  # kubectl get pods
+bash -c "export KUBECONFIG=${HOME?}/teleport-kubeconfig.yaml"
+  # $env.KUBECONFIG = $"($env.HOME)/teleport-kubeconfig.yaml"
+bash -c "tsh kube login cluster1"
+
+  bash -c "tsh proxy kube -p 8443 &"
+   $env.KUBECONFIG = "/home/simon/.tsh/keys/teleport.simonbrundin.com/admin-kube/teleport.simonbrundin.com/localproxy-8443-kubeconfig"
+  # tsh proxy kube -p 8443
+  print $"(ansi green)Inloggning lyckades!(ansi reset)"
+  kubectl get nodes
  
-  tsh kube login cluster1
 }
 
 # Kubernetes Dashboard
