@@ -3,34 +3,51 @@
 # Kort: Kubernetes
 def "main k" [...args] { simon kubernetes ...$args }
 
-def "main kubernetes login teleport" [clusterName = ""] {
-  # Kommandon direkt från Teleport
-bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com"
+def "main kubernetes login teleport" [clustername = ""] {
+  # kommandon direkt från teleport
+  bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com"
   # tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com
-bash -c "export KUBECONFIG=${HOME?}/teleport-kubeconfig.yaml"
-  # $env.KUBECONFIG = $"($env.HOME)/teleport-kubeconfig.yaml"
-bash -c "tsh kube login cluster1"
+  print $"(ansi blue)tsh login lyckades!(ansi reset)"
+  bash -c "export kubeconfig=${HOME?}/teleport-kubeconfig.yaml"
+  print $"(ansi blue)export kubeconfig lyckades!(ansi reset)"
+  # $env.kubeconfig = $"($env.home)/teleport-kubeconfig.yaml"
+  bash -c "unset TELEPORT_PROXY"
+  bash -c "unset TELEPORT_CLUSTER"
+  bash -c "unset TELEPORT_KUBE_CLUSTER"
+  bash -c "unset KUBECONFIG"
+  print "här"
+
+  ["teleport_proxy", "teleport_cluster", "teleport_kube_cluster", "kubeconfig"]
+  | each { |var|
+    if ($var in $env) {
+      hide-env $var
+    }
+  }
+  $env.KUBECONFIG = ""
+  bash -c "tsh kube login cluster1"
+  print $"(ansi blue)tsh kube login lyckades!(ansi reset)"
 
   bash -c "tsh proxy kube -p 8443 &"
-   $env.KUBECONFIG = "/home/simon/.tsh/keys/teleport.simonbrundin.com/admin-kube/teleport.simonbrundin.com/localproxy-8443-kubeconfig"
+  $env.KUBECONFIG = "/home/simon/.tsh/keys/teleport.simonbrundin.com/admin-kube/teleport.simonbrundin.com/localproxy-8443-kubeconfig"
   # tsh proxy kube -p 8443
-  print $"(ansi green)Inloggning lyckades!(ansi reset)"
+  print $"(ansi green)inloggning lyckades!(ansi reset)"
+  sleep 2sec
   kubectl get nodes
- 
+
 }
 
 # Kubernetes Dashboard
 def "main kubernetes dashboard" [] {
   if ((simon ip | to text) | str contains "192.168.4.1") {
     simon vpn up
-}
+  }
   k9s -c 'pods' -A --logoless --headless
 }
 
 # Godgänn alla CSR
 def "main kubernetes approve csr" [] {
   kubectl get csr --no-headers | awk '/Pending/ {print $1}' | xargs -r kubectl certificate approve
- print $"(ansi green)Alla Pending CSR har godkänts(ansi reset)"
+  print $"(ansi green)Alla Pending CSR har godkänts(ansi reset)"
 }
 
 # Force delete pod
@@ -120,11 +137,11 @@ def "main kubernetes remove finalizers" [] {
   let components = (
     $resource_types
     | each {|type|
-        kubectl get $type -n $selected_namespace -o json
-        | from json
-        | get items
-        | each {|item| $"($type)/($item.metadata.name)" }
-      }
+      kubectl get $type -n $selected_namespace -o json
+      | from json
+      | get items
+      | each {|item| $"($type)/($item.metadata.name)" }
+    }
     | flatten
   )
 
@@ -150,13 +167,13 @@ def "main kubernetes remove finalizers" [] {
     if not $has_finalizers {
       print $"ℹ️  ($kind)/($name) har inga finalizers."
     } else {
-           print $"⚙️  Tar bort finalizers från ($kind)/($name)..."
+      print $"⚙️  Tar bort finalizers från ($kind)/($name)..."
       kubectl patch $kind $name -n $selected_namespace -p '{"metadata":{"finalizers":null}}' --type=merge
       let new_details = (try {
         kubectl get $kind $name -n $selected_namespace -o json | from json
       } catch {
-        null
-      })
+          null
+        })
 
       if ($new_details | is-not-empty) and ($new_details.metadata.finalizers? | is-empty) {
         print "✅ Finalizers borttagna!"
@@ -164,7 +181,7 @@ def "main kubernetes remove finalizers" [] {
         print "⚠️  Kunde inte bekräfta att finalizers tagits bort."
       }
     }
-   
+
   }
 }
 
@@ -200,11 +217,11 @@ def "main kubernetes remove selected" [] {
   let components = (
     $resource_types
     | each {|type|
-        kubectl get $type -n $selected_namespace -o json
-        | from json
-        | get items
-        | each {|item| $"($type)/($item.metadata.name)" }
-      }
+      kubectl get $type -n $selected_namespace -o json
+      | from json
+      | get items
+      | each {|item| $"($type)/($item.metadata.name)" }
+    }
     | flatten
   )
 
@@ -243,9 +260,9 @@ def "main kubernetes longhorn test" [] {
   print $"(ansi blue)Installationsdisk:(ansi reset)"
   let install_disk = (talosctl get machineconfig -n $selected_node -o yaml | from yaml | get spec | from yaml | get machine.install.disk)
   if $install_disk == "/dev/mmcblk1" {
-  print $"(ansi green)($install_disk)(ansi reset)"
+    print $"(ansi green)($install_disk)(ansi reset)"
   } else {
-   print $"(ansi red)($install_disk)(ansi reset)"
+    print $"(ansi red)($install_disk)(ansi reset)"
   }
 
   print $"(ansi blue)Installerade tillägg:(ansi reset)"
@@ -259,7 +276,7 @@ def "main kubernetes longhorn test" [] {
   print $"(ansi blue)Machineconfig disks:(ansi reset)"
   let machine_disks = (talosctl get machineconfig -n $selected_node -o yaml | from yaml | get spec | from yaml | select machine.disks | to yaml)
   print $machine_disks
- 
+
 }
 
 # Installera ArgoCD
