@@ -3,39 +3,40 @@ use ../functions.nu  [fzfSelect]
 
 # Starta utvecklingsmijö i aktuell mapp
 def "main dev" [] {
-  let REPOS_PATH = "/home/simon/repos"
-  # let DEVCONTAINER_PATH = "environments/dev"
-  let repos = (ls $REPOS_PATH | where type == dir | get name | each { path basename } | sort | prepend ($env.PWD | path basename))
-  let selectedRepo = ($repos | str join "\n" | fzf | str trim | str replace -r '\[|\]' '')
-  if ($selectedRepo | is-empty) {
-    print "❌ Ingen repo vald"
-    return
-  }
-  # cd $"($REPOS_PATH)/($selectedRepo)/($DEVCONTAINER_PATH)"
-  # print (pwd)
-  #
-  # print $"(ansi blue) Letar efter .devcontainer.json...(ansi reset)"
-  # let files = ls -a | where name == ".devcontainer.json"
-  # if ($files | length) > 0 {
-  #   print $"(ansi green) .devcontainer.json hittades!(ansi reset)"
-  # } else {
-  #   print $"(ansi red) .devcontainer.json hittades inte!(ansi reset)"
-  #   let answer = (input "Vill du skapa en .devcontainer.json? (j/n): " | str trim | str downcase)
-  #   if ($answer starts-with 'j' or $answer starts-with 'y') {
-  #     let devcontainer_content = '{
-  #     "name": "Dev Environment",
-  #     "image": "mcr.microsoft.com/devcontainers/base:ubuntu"
-  #     }'
-  #     $devcontainer_content | save .devcontainer.json
-  #     print $"(ansi green) .devcontainer.json skapad!(ansi reset)"
-  #   }
+  nu dev.nu
+  # let REPOS_PATH = "/home/simon/repos"
+  # # let DEVCONTAINER_PATH = "environments/dev"
+  # let repos = (ls $REPOS_PATH | where type == dir | get name | each { path basename } | sort | prepend ($env.PWD | path basename))
+  # let selectedRepo = ($repos | str join "\n" | fzf | str trim | str replace -r '\[|\]' '')
+  # if ($selectedRepo | is-empty) {
+  #   print "❌ Ingen repo vald"
+  #   return
   # }
-
-  # let selectedProvider = (devpod provider list | ansi strip | lines | skip 3 | each { |line| $line | split row '|' | get 0 | str trim } | str join "\n" | ^fzf)
-
-  let devpodCommand = $"devpod up . --id ($selectedRepo)"
-  print $"(ansi blue)Kör `($devpodCommand)`(ansi reset)"
-  nu -c $"SHELL=/bin/bash ($devpodCommand)"
+  # # cd $"($REPOS_PATH)/($selectedRepo)/($DEVCONTAINER_PATH)"
+  # # print (pwd)
+  # #
+  # # print $"(ansi blue) Letar efter .devcontainer.json...(ansi reset)"
+  # # let files = ls -a | where name == ".devcontainer.json"
+  # # if ($files | length) > 0 {
+  # #   print $"(ansi green) .devcontainer.json hittades!(ansi reset)"
+  # # } else {
+  # #   print $"(ansi red) .devcontainer.json hittades inte!(ansi reset)"
+  # #   let answer = (input "Vill du skapa en .devcontainer.json? (j/n): " | str trim | str downcase)
+  # #   if ($answer starts-with 'j' or $answer starts-with 'y') {
+  # #     let devcontainer_content = '{
+  # #     "name": "Dev Environment",
+  # #     "image": "mcr.microsoft.com/devcontainers/base:ubuntu"
+  # #     }'
+  # #     $devcontainer_content | save .devcontainer.json
+  # #     print $"(ansi green) .devcontainer.json skapad!(ansi reset)"
+  # #   }
+  # # }
+  #
+  # # let selectedProvider = (devpod provider list | ansi strip | lines | skip 3 | each { |line| $line | split row '|' | get 0 | str trim } | str join "\n" | ^fzf)
+  #
+  # let devpodCommand = $"devpod up . --id ($selectedRepo)"
+  # print $"(ansi blue)Kör `($devpodCommand)`(ansi reset)"
+  # nu -c $"SHELL=/bin/bash ($devpodCommand)"
 
 }
 

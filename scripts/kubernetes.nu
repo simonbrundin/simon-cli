@@ -26,7 +26,7 @@ def "main kubernetes login teleport" [clustername = ""] {
   $env.KUBECONFIG = ""
   bash -c "tsh kube login cluster1"
   print $"(ansi blue)tsh kube login lyckades!(ansi reset)"
-
+  fuser -k 8443/tcp
   bash -c "tsh proxy kube -p 8443 &"
   $env.KUBECONFIG = "/home/simon/.tsh/keys/teleport.simonbrundin.com/admin-kube/teleport.simonbrundin.com/localproxy-8443-kubeconfig"
   # tsh proxy kube -p 8443
