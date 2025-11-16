@@ -26,7 +26,15 @@ def "main kubernetes login teleport" [clustername = ""] {
   $env.KUBECONFIG = ""
   bash -c "tsh kube login cluster1"
   print $"(ansi blue)tsh kube login lyckades!(ansi reset)"
-  fuser -k 8443/tcp
+
+  # Avsluta allt på port 8443 och vänta tills porten är ledig
+  print $"(ansi yellow)Rensar port 8443...(ansi reset)"
+  try { bash -c "fuser -k 8443/tcp 2>/dev/null" } catch { }
+
+  # Vänta tills porten är helt ledig (max 3 sekunder)
+  bash -c "for i in {1..30}; do nc -z localhost 8443 2>/dev/null || break; sleep 0.1; done"
+  print $"(ansi green)Port 8443 är redo!(ansi reset)"
+
   bash -c "tsh proxy kube -p 8443 &"
   $env.KUBECONFIG = "/home/simon/.tsh/keys/teleport.simonbrundin.com/admin-kube/teleport.simonbrundin.com/localproxy-8443-kubeconfig"
   # tsh proxy kube -p 8443
