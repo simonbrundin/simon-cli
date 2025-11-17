@@ -171,8 +171,8 @@ def "main talos update config" [nodnamn?: string] {
     $"Konfiguration har applicerats på noden ($nodnamn)."
   }
   print $message
-  # rm secrets.yaml
-    # rm -rf $config_dir
+  rm secrets.yaml
+    rm -rf $config_dir
 }
 
 # Talos health
