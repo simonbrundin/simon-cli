@@ -46,9 +46,6 @@ def "main kubernetes login teleport" [clustername = ""] {
 
 # Kubernetes Dashboard
 def "main kubernetes dashboard" [] {
-  if ((simon ip | to text) | str contains "192.168.4.1") {
-    simon vpn up
-  }
   k9s -c 'pods' -A --logoless --headless
 }
 
