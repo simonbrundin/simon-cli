@@ -5,8 +5,8 @@ def "main k" [...args] { simon kubernetes ...$args }
 
 def "main kubernetes login teleport" [clustername = ""] {
   # kommandon direkt från teleport
-  bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com"
-  # tsh login --proxy=teleport.simonbrundin.com:443 --auth=local --user=admin teleport.simonbrundin.com
+  # Ta bort --auth=local för att möjliggöra WebAuthn/security key
+  bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --user=admin teleport.simonbrundin.com"
   print $"(ansi blue)tsh login lyckades!(ansi reset)"
   bash -c "export kubeconfig=${HOME?}/teleport-kubeconfig.yaml"
   print $"(ansi blue)export kubeconfig lyckades!(ansi reset)"
