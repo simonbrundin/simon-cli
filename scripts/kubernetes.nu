@@ -4,9 +4,21 @@
 def "main k" [...args] { simon kubernetes ...$args }
 
 def "main kubernetes login teleport" [clustername = ""] {
+  # Kontrollera om vi kan komma åt Kubernetes API
+  # let can_access = (try { kubectl get nodes; true } catch { false })
+
+  # if not $can_access {
+  #   # Hämta lösenord från 1Password
+  #   # let teleport_password = (op read op://private/teleport/password --force)
+  #   bash -c $"tsh login --proxy=teleport.simonbrundin.com:443 --user=admin --auth=passwordless teleport.simonbrundin.com"
+  # } else {
+  #   bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --user=admin teleport.simonbrundin.com"
+  # }
+
   # kommandon direkt från teleport
+
   # Ta bort --auth=local för att möjliggöra WebAuthn/security key
-  bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --user=admin teleport.simonbrundin.com"
+  bash -c "tsh login --proxy=teleport.simonbrundin.com:443 --user=admin --auth=passwordless teleport.simonbrundin.com"
   print $"(ansi blue)tsh login lyckades!(ansi reset)"
   bash -c "export kubeconfig=${HOME?}/teleport-kubeconfig.yaml"
   print $"(ansi blue)export kubeconfig lyckades!(ansi reset)"
