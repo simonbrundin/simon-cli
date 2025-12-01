@@ -101,7 +101,7 @@ def "main vpn up" [] {
 
 # Skapa nytt GitHub-repo
 def "main new repo" [name: string] {
-  let repo_path = $"/Users/simon/repos/($name)"
+  let repo_path = $"($env.HOME)/repos/($name)"
   
   # Skapa mapp och gå dit
   mkdir $repo_path
@@ -119,7 +119,7 @@ def "main new repo" [name: string] {
   ^git commit -m "Initial commit"
 
   # Skapa repo på GitHub
-  ^gh repo create $name --public --remote=origin --source $"/Users/simon/repos/($name)" --push
+  ^gh repo create $name --public --remote=origin --source $"($env.HOME)/repos/($name)" --push
 
   # Pusha till GitHub
   ^git push -u origin main

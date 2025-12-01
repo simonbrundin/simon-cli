@@ -3,6 +3,32 @@
 # Kort: Kubernetes
 def "main k" [...args] { simon kubernetes ...$args }
 
+def "main kubernetes login certificate" [clustername = ""] {
+# Läs in från 1Password
+  let kubeconfig_content = (op read "op://talos/kubeconfig/kubeconfig")
+  print $"(ansi blue)Från 1Password(ansi reset)"
+  # print $kubeconfig_content
+
+  # Skriv till en temporär fil
+  let temp_kubeconfig = $"/tmp/kubeconfig-certificate"
+  print $"(ansi blue)Path för temp_kubeconfig(ansi reset)"
+  print $"(ansi green)($temp_kubeconfig)(ansi reset)"
+$kubeconfig_content | save $temp_kubeconfig -f
+  print $"(ansi blue)Innehållet i filen(ansi reset)"
+  # cat $temp_kubeconfig
+
+
+  # Sätt miljövariabeln till den temporära filen
+
+
+  $env.KUBECONFIG = $temp_kubeconfig
+  print $"(ansi blue)kubeconfig-variabeln(ansi reset)"
+  print $env.KUBECONFIG
+
+  kubectl get nodes
+
+  print $"(ansi green)Inloggning lyckades!(ansi reset)"
+}
 def "main kubernetes login teleport" [clustername = ""] {
   # Kontrollera om vi kan komma åt Kubernetes API
   # let can_access = (try { kubectl get nodes; true } catch { false })

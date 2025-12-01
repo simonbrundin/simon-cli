@@ -26,12 +26,25 @@ def "main talos upgrade" [] {
   let latestVersions: list = (http get "https://api.github.com/repos/siderolabs/talos/releases?per_page=5" | select tag_name | get tag_name)
   print $"(ansi blue)Vilken version vill du installera?(ansi reset)"
   let selectedVersion  = fzfSelect $latestVersions
-  let nodes: list = (kubectl get nodes | detect columns | get NAME)
+
+  print $"(ansi blue)Hur loggar du in mot klustret?(ansi reset)"
+  let loginMethods = ["Teleport", "Certifikat"]
+  let selectedMethod = fzfSelect $loginMethods
+  let nodes = if $selectedMethod == "Certifikat" {
+    print "hej"
+    (kubectl get nodes --kubeconfig "/tmp/kubeconfig-certificate" | detect columns | get NAME)
+  } else {
+    print "då"
+    (kubectl get nodes | detect columns | get NAME)
+  }
   print $"(ansi blue)Vilka noder vill du uppdatera?(ansi reset)"
   let selectedNodes: list = fzfSelect $nodes
   let selectedNodesString: string = ($selectedNodes | str join ",")
-  print $"(ansi blue)Ange Schematic ID:(ansi reset)"
-  let schematicID = (input)
+  let schematicID = (open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where name == $selectedNodesString | get talos-id | first)
+  # print $"(ansi blue)Ange Schematic ID:(ansi reset)"
+  # let schematicID = (input)
+  print $schematicID
+  print $"talosctl upgrade --image factory.talos.dev/installer/($schematicID):($selectedVersion) -n ($selectedNodesString)"
   talosctl upgrade --image factory.talos.dev/installer/($schematicID):($selectedVersion) -n $selectedNodesString
   # $selectedNodes | each {
   #    | node | talosctl upgrade --image factory.talos.dev/installer/($schematicID):($selectedVersion) -n $selectedNodesString
