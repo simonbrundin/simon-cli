@@ -146,13 +146,13 @@ def "main disk" [mappnamn?: string] {
 
 # Flasha enhet via PXE-server
 def "main flash" [] {
-    networksetup -connectpppoeservice "UniFi Teleport"
+    # networksetup -connectpppoeservice "UniFi Teleport"
     ssh pxe -t "/home/linuxbrew/.linuxbrew/bin/nu ~/infrastructure/pxe/flash.nu"
 }
 
 # Förbered hårddisk för lagring i Longhorn 
 def "main xfs" [] {
-    networksetup -connectpppoeservice "UniFi Teleport"
+    # networksetup -connectpppoeservice "UniFi Teleport"
     ssh pxe -t "/home/linuxbrew/.linuxbrew/bin/nu /home/simon/infrastructure/pxe/xfs.nu"
 }
 

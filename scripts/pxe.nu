@@ -60,9 +60,9 @@ def "main setup pxe" [] {
   print $"(ansi green)Användaren har nu sudo-rättigheter(ansi reset)"
   print "----------------------------------------------"
   # Installera Brew
-  if (ssh pxe -T '/bin/bash -lc "PATH=/opt/homebrew/bin:/usr/local/bin:$PATH command -v brew"' | str trim | is-empty) {
+  if (ssh pxe -T 'bash -c "if test -f /home/linuxbrew/.linuxbrew/bin/brew; then echo exists; else echo missing; fi"' | str trim) == 'missing' {
     print "Installerar Brew"
-    ssh pxe -T '/bin/bash -lc "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    ssh pxe -T 'curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/install.sh ; chmod +x /tmp/install.sh ; /tmp/install.sh'
   }
   print $"(ansi green)Brew installerat!(ansi reset)"
   print "----------------------------------------------"
@@ -73,7 +73,7 @@ def "main setup pxe" [] {
   # Installera Nushell
   if (ssh pxe -T '/bin/bash -lc "PATH=/opt/homebrew/bin:/usr/local/bin:$PATH command -v nu"' | str trim | is-empty) {
     print "Installerar Nushell"
-    ssh pxe -t 'brew install nushell'
+    ssh pxe -t '/home/linuxbrew/.linuxbrew/bin/brew install nushell'
   }
   print $"(ansi green)Nushell installerat!(ansi reset)"
   print "----------------------------------------------"
@@ -85,7 +85,7 @@ def "main setup pxe" [] {
   print "----------------------------------------------"
 
   # SSH-nyckel hos github
-  ssh pxe -T '/bin/bash -lc "if [ ! -f ~/.ssh/id_github ]; then ssh-keygen -t ed25519 -C "simonbrundin@gmail.com" -f ~/.ssh/id_github; fi; cat ~/.ssh/id_github.pub"' |  grep -E '^(ssh-(ed25519|rsa)|sk-ssh-(ed25519|ecdsa)@openssh.com) ' | head -n1 | pbcopy
+  ssh pxe -T '/bin/bash -lc "if [ ! -f ~/.ssh/id_github ]; then ssh-keygen -t ed25519 -C "simonbrundin@gmail.com" -f ~/.ssh/id_github; fi; cat ~/.ssh/id_github.pub"' |  grep -E '^(ssh-(ed25519|rsa)|sk-ssh-(ed25519|ecdsa)@openssh.com) ' | head -n1
   let ssh_output = (ssh pxe -T 'ssh -i ~/.ssh/id_github -o IdentitiesOnly=yes -T git@github.com' | complete)
   if ($ssh_output.stderr !~ 'successfully authenticated') { start "https://github.com/settings/ssh/new" }
   # ssh pxe -t '/home/linuxbrew/.linuxbrew/bin/brew install gh'
@@ -104,14 +104,17 @@ def "main setup pxe" [] {
   git clone git@github.com:simonbrundin/infrastructure.git
   }'
 
-  # Installera docker-compose
-  ssh pxe -t 'sudo apt install docker docker-compose'
+   # Installera Docker
+   ssh pxe -t 'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg'
+   ssh pxe -t 'sudo bash -c "echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \$(lsb_release -cs) stable\" > /etc/apt/sources.list.d/docker.list"'
+   ssh pxe -t 'sudo apt update'
+   ssh pxe -t 'sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin'
 
 
 
-  # Kör setupskript
-  print "Kör setup.nu"
-  print "----------------------------------------------"
-  ssh pxe -t '/home/linuxbrew/.linuxbrew/bin/nu ~/infrastructure/pxe/setup.nu'
+   # Kör setupskript
+   print "Kör setup.nu"
+   print "----------------------------------------------"
+   ssh pxe -t '/home/linuxbrew/.linuxbrew/bin/nu ~/infrastructure/pxe/setup.nu'
 
 }
