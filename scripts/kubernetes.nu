@@ -25,9 +25,13 @@ $kubeconfig_content | save $temp_kubeconfig -f
   print $"(ansi blue)kubeconfig-variabeln(ansi reset)"
   print $env.KUBECONFIG
 
-  kubectl get nodes
+let result = (try { kubectl get nodes; true } catch { false })
 
-  print $"(ansi green)Inloggning lyckades!(ansi reset)"
+if $result {
+    print $"(ansi green)Inloggning lyckades!(ansi reset)"
+} else {
+    print $"(ansi red)Inloggning misslyckades – kontrollera certifikat eller nätverk.(ansi reset)"
+}
 }
 def "main kubernetes login teleport" [clustername = ""] {
   # Kontrollera om vi kan komma åt Kubernetes API
