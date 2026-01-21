@@ -1,0 +1,196 @@
+#!/usr/bin/env nu
+
+source scripts/setup.nu
+source scripts/workflow.nu
+source scripts/git.nu
+source scripts/coding.nu
+source scripts/talos.nu
+source scripts/ai.nu
+source scripts/install.nu
+source scripts/config.nu
+source scripts/pxe.nu
+source scripts/ceph.nu
+source scripts/kubernetes.nu
+
+use functions.nu 
+def main [] {
+  let banner = "
+  ╔════════════════════════════════════════════════════════════════════════╗
+  ║                                                                        ║
+  ║    ███████╗██╗███╗   ███╗ ██████╗ ███╗   ██╗     ██████╗██╗     ██╗    ║
+  ║    ██╔════╝██║████╗ ████║██╔═══██╗████╗  ██║    ██╔════╝██║     ██║    ║
+  ║    ███████╗██║██╔████╔██║██║   ██║██╔██╗ ██║    ██║     ██║     ██║    ║
+  ║    ╚════██║██║██║╚██╔╝██║██║   ██║██║╚██╗██║    ██║     ██║     ██║    ║
+  ║    ███████║██║██║ ╚═╝ ██║╚██████╔╝██║ ╚████║    ╚██████╗███████╗██║    ║
+  ║    ╚══════╝╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝     ╚═════╝╚══════╝╚═╝    ║
+  ║                                                                        ║
+  ╚════════════════════════════════════════════════════════════════════════╝
+  "
+  print $"(ansi blue)($banner)(ansi reset)"
+  #I simon --help
+  print "The most personal CLI ever <3"
+  print "See commands - simon --help"
+  let commands = (simon --help | lines | where $it starts-with "  simon " | str replace -r '^  simon (.+?) \(custom\).*' '$1' | where {|x| ($x | str length) > 1 })
+  let selectedCommand = fzfSelect $commands
+  if ($selectedCommand | is-empty) {
+    print "❌ Inget kommando valt"
+    return
+  }
+  print $"(ansi blue)Kör kommando: (ansi reset)($selectedCommand)"
+  do { nu -c $"simon ($selectedCommand)" }
+}
+
+# Dokumentation
+def "main docs" [] {
+    let options = [
+        "Karabiner.ts",
+        "Nushell"
+        "Yazi"
+        "Talos"
+        "OpenCode"
+    ]
+
+    # Välj alternativ
+    let choice = fzfSelect $options 
+
+    match $choice {
+        "Karabiner.ts" => {
+            start https://karabiner.ts.evanliu.dev/
+        },
+        "Nushell" => {
+            start https://www.nushell.sh/book/
+        },
+        "Talos" => {
+            start https://www.talos.dev/v1.10/
+        },
+        "OpenCode" => {
+            start https://opencode.ai/docs/ 
+        },
+        "Yazi" => {
+            start https://yazi-rs.github.io/docs/installation
+        },
+    }
+}
+
+
+# Se lokala ip-adresser
+def "main ip" [] {
+  ifconfig | lines | find -r 'inet\s' | split column ' ' | select column2 | rename ip | where ip != '127.0.0.1'
+}
+
+
+# Anslut via VPN till UniFi Gateway
+def "main vpn up" [] {
+    print "Ansluter till VPN..."
+    ^networksetup -connectpppoeservice "UniFi Teleport"
+
+
+    loop {
+        let status = (^networksetup -showpppoestatus "UniFi Teleport" | str trim)
+        if $status == "connected" {
+            print "VPN ansluten!"
+            break
+        }
+
+        sleep 1sec
+        print "."
+    }
+}
+
+#!/usr/bin/env nu
+
+# Skapa nytt GitHub-repo
+def "main new repo" [name: string] {
+  let repo_path = $"($env.HOME)/repos/($name)"
+  
+  # Skapa mapp och gå dit
+  mkdir $repo_path
+  cd $repo_path
+
+  # Initiera git-repo
+  ^git init
+  ^git checkout -b main
+
+  # Skapa README
+  echo $"# ($name)" | save README.md
+
+  # Lägg till, committa
+  ^git add .
+  ^git commit -m "Initial commit"
+
+  # Skapa repo på GitHub
+  ^gh repo create $name --public --remote=origin --source $"($env.HOME)/repos/($name)" --push
+
+  # Pusha till GitHub
+  ^git push -u origin main
+
+  echo $"Repo ($name) skapat i ($repo_path) och pushat till GitHub!"
+  
+  cd $repo_path
+}
+
+# Koppla ner VPN
+def "main vpn down" [] {
+
+    networksetup -disconnectpppoeservice "UniFi Teleport"
+
+}
+
+# Diskrensning - Se vad som tar plats på datorn
+def "main disk" [mappnamn?: string] {
+    if ($mappnamn | is-empty) {
+        let mappnamn = $env.HOME
+    }
+  gdu-go $mappnamn
+}
+
+# Flasha enhet via PXE-server
+def "main flash" [] {
+    # networksetup -connectpppoeservice "UniFi Teleport"
+    ssh pxe -t "/home/linuxbrew/.linuxbrew/bin/nu ~/infrastructure/pxe/flash.nu"
+}
+
+# Förbered hårddisk för lagring i Longhorn 
+def "main xfs" [] {
+    # networksetup -connectpppoeservice "UniFi Teleport"
+    ssh pxe -t "/home/linuxbrew/.linuxbrew/bin/nu /home/simon/infrastructure/pxe/xfs.nu"
+}
+
+# Mät internethastighet
+def "main speed" [] {
+  speedtest
+}
+
+# Ändra Cron Jobs
+def "main edit cron" [] {
+  crontab -e
+}
+
+# Lista Cron Jobs
+def "main list cron" [] {
+  crontab -l
+}
+
+# Starta Kanata
+
+def "main kanata start" [] {
+    systemctl --user start kanata
+  }
+
+# Starta om Kanata 
+def "main kanata restart" [] {
+
+
+
+
+
+  systemctl --user restart kanata
+}
+
+# Testa Kanata
+def "main kanata test" [] {
+cat /home/simon/repos/dotfiles/kanata/.config/kanata/kanata.kbd | cb 
+strt "https://jtroo.github.io/"
+}
+
+

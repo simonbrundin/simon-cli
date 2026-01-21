@@ -1,196 +1,571 @@
-#!/usr/bin/env nu
+#!/bin/bash
 
-source scripts/setup.nu
-source scripts/workflow.nu
-source scripts/git.nu
-source scripts/coding.nu
-source scripts/talos.nu
-source scripts/ai.nu
-source scripts/install.nu
-source scripts/config.nu
-source scripts/pxe.nu
-source scripts/ceph.nu
-source scripts/kubernetes.nu
+# Get the directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-use functions.nu 
-def main [] {
-  let banner = "
-  ╔════════════════════════════════════════════════════════════════════════╗
-  ║                                                                        ║
-  ║    ███████╗██╗███╗   ███╗ ██████╗ ███╗   ██╗     ██████╗██╗     ██╗    ║
-  ║    ██╔════╝██║████╗ ████║██╔═══██╗████╗  ██║    ██╔════╝██║     ██║    ║
-  ║    ███████╗██║██╔████╔██║██║   ██║██╔██╗ ██║    ██║     ██║     ██║    ║
-  ║    ╚════██║██║██║╚██╔╝██║██║   ██║██║╚██╗██║    ██║     ██║     ██║    ║
-  ║    ███████║██║██║ ╚═╝ ██║╚██████╔╝██║ ╚████║    ╚██████╗███████╗██║    ║
-  ║    ╚══════╝╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝     ╚═════╝╚══════╝╚═╝    ║
-  ║                                                                        ║
-  ╚════════════════════════════════════════════════════════════════════════╝
-  "
-  print $"(ansi blue)($banner)(ansi reset)"
-  #I simon --help
-  print "The most personal CLI ever <3"
-  print "See commands - simon --help"
-  let commands = (simon --help | lines | where $it starts-with "  simon " | str replace -r '^  simon (.+?) \(custom\).*' '$1' | where {|x| ($x | str length) > 1 })
-  let selectedCommand = fzfSelect $commands
-  if ($selectedCommand | is-empty) {
-    print "❌ Inget kommando valt"
-    return
-  }
-  print $"(ansi blue)Kör kommando: (ansi reset)($selectedCommand)"
-  do { nu -c $"simon ($selectedCommand)" }
+# Source converted scripts
+source "$SCRIPT_DIR/scripts/setup.sh"
+source "$SCRIPT_DIR/scripts/workflow.sh"
+source "$SCRIPT_DIR/scripts/git.sh"
+source "$SCRIPT_DIR/scripts/coding.sh"
+source "$SCRIPT_DIR/scripts/talos.sh"
+source "$SCRIPT_DIR/scripts/ai.sh"
+source "$SCRIPT_DIR/scripts/install.sh"
+source "$SCRIPT_DIR/scripts/config.sh"
+source "$SCRIPT_DIR/scripts/pxe.sh"
+source "$SCRIPT_DIR/scripts/ceph.sh"
+source "$SCRIPT_DIR/scripts/kubernetes.sh"
+
+# Source functions
+source "$SCRIPT_DIR/functions.sh"
+
+# Banner
+banner="
+╔════════════════════════════════════════════════════════════════════════╗
+║                                                                        ║
+║    ███████╗██╗███╗   ███╗ ██████╗ ███╗   ██╗     ██████╗██╗     ██╗    ║
+║    ██╔════╝██║████╗ ████║██╔═══██╗████╗  ██║    ██╔════╝██║     ██║    ║
+║    ███████╗██║██╔████╔██║██║   ██║██╔██╗ ██║    ██║     ██║     ██║    ║
+║    ╚════██║██║██║╚██╔╝██║██║   ██║██║╚██╗██║    ██║     ██║     ██║    ║
+║    ███████║██║██║ ╚═╝ ██║╚██████╔╝██║ ╚████║    ╚██████╗███████╗██║    ║
+║    ╚══════╝╚═╝╚═╝     ╚═╝ ╚═════╝ ╚═╝  ╚═══╝     ╚═════╝╚══════╝╚═╝    ║
+║                                                                        ║
+╚════════════════════════════════════════════════════════════════════════╝
+"
+
+# Dynamically collect commands from defined functions
+commands=()
+for func in $(declare -F | awk '{print $3}' | grep '^main_' | grep -v '^main$'); do
+    cmd=$(echo "$func" | sed 's/^main_//' | tr '_' ' ')
+    commands+=("$cmd")
+done
+
+echo "Debug: Found ${#commands[@]} commands"
+
+main() {
+    echo -e "\033[34m$banner\033[0m"
+    echo "The most personal CLI ever <3"
+    echo "See commands - simon --help"
+
+    # Add script-based commands dynamically? For now, hardcoded.
+    # TODO: Add commands from scripts if they have main functions.
+
+    selectedCommand=$(printf '%s\n' "${commands[@]}" | fzf | tr -d '\n')
+
+    echo "Debug: selectedCommand='$selectedCommand'"
+
+    if [ -z "$selectedCommand" ]; then
+        echo "❌ Inget kommando valt"
+        return
+    fi
+
+    echo -e "\033[34mKör kommando: \033[0m$selectedCommand"
+    echo "About to case with '$selectedCommand' (length ${#selectedCommand})"
+
+    # Set arguments for subcommand parsing
+    set -- $selectedCommand
+
+    # Run the subcommand parsing logic
+    case "$1" in
+            docs) main_docs ;;
+            ip) main_ip ;;
+            vpn)
+                case "$2" in
+                    up) main_vpn_up ;;
+                    down) main_vpn_down ;;
+                    *) echo "Unknown vpn command: $2" ;;
+                esac
+                ;;
+            new)
+                case "$2" in
+                    repo) shift 2; main_new_repo "$@" ;;
+                    *) echo "Unknown new command: $2" ;;
+                esac
+                ;;
+            disk) shift; main_disk "$@" ;;
+            flash) main_flash ;;
+            xfs) main_xfs ;;
+            speed) main_speed ;;
+            edit)
+                case "$2" in
+                    cron) main_edit_cron ;;
+                    *) echo "Unknown edit command: $2" ;;
+                esac
+                ;;
+            list)
+                case "$2" in
+                    cron) main_list_cron ;;
+                    *) echo "Unknown list command: $2" ;;
+                esac
+                ;;
+            kanata)
+                case "$2" in
+                    start) main_kanata_start ;;
+                    restart) main_kanata_restart ;;
+                    test) main_kanata_test ;;
+                    *) echo "Unknown kanata command: $2" ;;
+                esac
+                ;;
+            kubernetes)
+                arg="$2"
+                if [ -n "$3" ]; then arg="$arg $3"; fi
+                case "$arg" in
+                    "login certificate") main_kubernetes_login_certificate ;;
+                    "login teleport") main_kubernetes_login_teleport ;;
+                    "dashboard") main_kubernetes_dashboard ;;
+                    "approve csr") main_kubernetes_approve_csr ;;
+                    "delete pod") main_kubernetes_delete_pod ;;
+                    "debug") shift 2; main_kubernetes_debug "$@" ;;
+                    "remove finalizers") main_kubernetes_remove_finalizers ;;
+                    "deleting") main_kubernetes_deleting ;;
+                    "terminating") main_kubernetes_terminating ;;
+                    "remove selected") main_kubernetes_remove_selected ;;
+                    "longhorn test") main_kubernetes_longhorn_test ;;
+                    "install argocd") main_kubernetes_install_argocd ;;
+                    *) echo "Unknown kubernetes command: $arg" ;;
+                esac
+                ;;
+            talos)
+                arg="$2"
+                if [ -n "$3" ]; then arg="$arg $3"; fi
+                case "$arg" in
+                    "dashboard") shift 2; main_talos_dashboard "$@" ;;
+                    "upgrade") main_talos_upgrade ;;
+                    "update config") shift 2; main_talos_update_config "$@" ;;
+                    "health") main_talos_health ;;
+                    "update kubeconfig") main_talos_update_kubeconfig ;;
+                    "reboot all") main_talos_reboot_all ;;
+                    *) echo "Unknown talos command: $arg" ;;
+                esac
+                ;;
+            bootstrap)
+                case "$2" in
+                    mac) main_bootstrap_mac ;;
+                    *) echo "Unknown bootstrap command: $2" ;;
+                esac
+                ;;
+            setup)
+                case "$2" in
+                    argocd) main_setup_argocd ;;
+                    pxe) main_setup_pxe ;;
+                    *) echo "Unknown setup command: $2" ;;
+                esac
+                ;;
+            install) shift; main_install "$@" ;;
+            i) shift; main_i "$@" ;;
+            uninstall) shift; main_uninstall "$@" ;;
+            chezmoi)
+                case "$2 $3" in
+                    "convert symlink") main_chezmoi_convert_symlink ;;
+                    *) echo "Unknown chezmoi command: $2 $3" ;;
+                esac
+                ;;
+            config) shift; main_config "$@" ;;
+            c) shift; main_c "$@" ;;
+            source) shift; main_source "$@" ;;
+            s) shift; main_s "$@" ;;
+            pxe)
+                case "$2 $3" in
+                    "debug dhcp") main_pxe_debug_dhcp ;;
+                    "debug tftp") main_pxe_debug_tftp ;;
+                    *) echo "Unknown pxe command: $2 $3" ;;
+                esac
+                ;;
+            backup)
+                case "$2" in
+                    pxe) main_backup_pxe ;;
+                    *) echo "Unknown backup command: $2" ;;
+                esac
+                ;;
+            dev) main_dev ;;
+            devpod)
+                case "$2" in
+                    delete) main_devpod_delete ;;
+                    *) echo "Unknown devpod command: $2" ;;
+                esac
+                ;;
+            login)
+                case "$2" in
+                    vault) main_login_vault ;;
+                    *) echo "Unknown login command: $2" ;;
+                esac
+                ;;
+            test) main_test ;;
+            commit) main_commit ;;
+            clone) shift; main_clone "$@" ;;
+            ci) shift; main_ci "$@" ;;
+            ai)
+                if [ -z "$2" ]; then
+                    main_ai
+                else
+                    case "$2 $3" in
+                        "change agent") main_ai_change_agent ;;
+                        "set agent") main_ai_set_agent ;;
+                        *) echo "Unknown ai command: $2 $3" ;;
+                    esac
+                fi
+                ;;
+            ceph)
+                case "$2" in
+                    status) main_ceph_status ;;
+                    cluster) main_ceph_cluster ;;
+                    delete) main_ceph_delete ;;
+                    *) echo "Unknown ceph command: $2" ;;
+                esac
+                ;;
+            *) echo "Unknown command: $1" ;;
+        esac
 }
 
-# Dokumentation
-def "main docs" [] {
-    let options = [
-        "Karabiner.ts",
+# Subcommands
+
+main_docs() {
+    options=(
+        "Karabiner.ts"
         "Nushell"
         "Yazi"
         "Talos"
         "OpenCode"
-    ]
+    )
 
-    # Välj alternativ
-    let choice = fzfSelect $options 
+    choice=$(fzfSelect "${options[@]}")
 
-    match $choice {
-        "Karabiner.ts" => {
-            start https://karabiner.ts.evanliu.dev/
-        },
-        "Nushell" => {
-            start https://www.nushell.sh/book/
-        },
-        "Talos" => {
-            start https://www.talos.dev/v1.10/
-        },
-        "OpenCode" => {
-            start https://opencode.ai/docs/ 
-        },
-        "Yazi" => {
-            start https://yazi-rs.github.io/docs/installation
-        },
-    }
+    case $choice in
+        "Karabiner.ts") xdg-open https://karabiner.ts.evanliu.dev/ ;;
+        "Nushell") xdg-open https://www.nushell.sh/book/ ;;
+        "Talos") xdg-open https://www.talos.dev/v1.10/ ;;
+        "OpenCode") xdg-open https://opencode.ai/docs/ ;;
+        "Yazi") xdg-open https://yazi-rs.github.io/docs/installation ;;
+    esac
 }
 
-
-# Se lokala ip-adresser
-def "main ip" [] {
-  ifconfig | lines | find -r 'inet\s' | split column ' ' | select column2 | rename ip | where ip != '127.0.0.1'
+main_ip() {
+    ifconfig | grep -E 'inet\s' | awk '{print $2}' | grep -v '127.0.0.1'
 }
 
+main_vpn_up() {
+    echo "Ansluter till VPN..."
+    networksetup -connectpppoeservice "UniFi Teleport"
 
-# Anslut via VPN till UniFi Gateway
-def "main vpn up" [] {
-    print "Ansluter till VPN..."
-    ^networksetup -connectpppoeservice "UniFi Teleport"
-
-
-    loop {
-        let status = (^networksetup -showpppoestatus "UniFi Teleport" | str trim)
-        if $status == "connected" {
-            print "VPN ansluten!"
+    while true; do
+        status=$(networksetup -showpppoestatus "UniFi Teleport" | tr -d '\n')
+        if [ "$status" = "connected" ]; then
+            echo "VPN ansluten!"
             break
-        }
-
-        sleep 1sec
-        print "."
-    }
+        fi
+        sleep 1
+        echo "."
+    done
 }
 
-#!/usr/bin/env nu
+main_new_repo() {
+    name="$1"
+    if [ -z "$name" ]; then
+        echo "Usage: simon new repo <name>"
+        return
+    fi
+    repo_path="$HOME/repos/$name"
 
-# Skapa nytt GitHub-repo
-def "main new repo" [name: string] {
-  let repo_path = $"($env.HOME)/repos/($name)"
-  
-  # Skapa mapp och gå dit
-  mkdir $repo_path
-  cd $repo_path
+    mkdir -p "$repo_path"
+    cd "$repo_path"
 
-  # Initiera git-repo
-  ^git init
-  ^git checkout -b main
+    git init
+    git checkout -b main
 
-  # Skapa README
-  echo $"# ($name)" | save README.md
+    echo "# $name" > README.md
 
-  # Lägg till, committa
-  ^git add .
-  ^git commit -m "Initial commit"
+    git add .
+    git commit -m "Initial commit"
 
-  # Skapa repo på GitHub
-  ^gh repo create $name --public --remote=origin --source $"($env.HOME)/repos/($name)" --push
+    gh repo create "$name" --public --remote=origin --source="$repo_path" --push
 
-  # Pusha till GitHub
-  ^git push -u origin main
+    git push -u origin main
 
-  echo $"Repo ($name) skapat i ($repo_path) och pushat till GitHub!"
-  
-  cd $repo_path
+    echo "Repo $name skapat i $repo_path och pushat till GitHub!"
 }
 
-# Koppla ner VPN
-def "main vpn down" [] {
-
+main_vpn_down() {
     networksetup -disconnectpppoeservice "UniFi Teleport"
-
 }
 
-# Diskrensning - Se vad som tar plats på datorn
-def "main disk" [mappnamn?: string] {
-    if ($mappnamn | is-empty) {
-        let mappnamn = $env.HOME
-    }
-  gdu-go $mappnamn
+main_disk() {
+    mappnamn="${1:-$HOME}"
+    gdu-go "$mappnamn"
 }
 
-# Flasha enhet via PXE-server
-def "main flash" [] {
-    # networksetup -connectpppoeservice "UniFi Teleport"
+main_flash() {
     ssh pxe -t "/home/linuxbrew/.linuxbrew/bin/nu ~/infrastructure/pxe/flash.nu"
 }
 
-# Förbered hårddisk för lagring i Longhorn 
-def "main xfs" [] {
-    # networksetup -connectpppoeservice "UniFi Teleport"
+main_xfs() {
     ssh pxe -t "/home/linuxbrew/.linuxbrew/bin/nu /home/simon/infrastructure/pxe/xfs.nu"
 }
 
-# Mät internethastighet
-def "main speed" [] {
-  speedtest
+main_speed() {
+    speedtest
 }
 
-# Ändra Cron Jobs
-def "main edit cron" [] {
-  crontab -e
+main_edit_cron() {
+    crontab -e
 }
 
-# Lista Cron Jobs
-def "main list cron" [] {
-  crontab -l
+main_list_cron() {
+    crontab -l
 }
 
-# Starta Kanata
-
-def "main kanata start" [] {
+main_kanata_start() {
     systemctl --user start kanata
-  }
-
-# Starta om Kanata 
-def "main kanata restart" [] {
-
-
-
-
-
-  systemctl --user restart kanata
 }
 
-# Testa Kanata
-def "main kanata test" [] {
-cat /home/simon/repos/dotfiles/kanata/.config/kanata/kanata.kbd | cb 
-strt "https://jtroo.github.io/"
+main_kanata_restart() {
+    systemctl --user restart kanata
 }
 
+main_kanata_test() {
+    cat /home/simon/repos/dotfiles/kanata/.config/kanata/kanata.kbd | cb
+    xdg-open "https://jtroo.github.io/"
+}
 
+show_help() {
+    echo "Available commands:"
+    echo "  docs              Open documentation links"
+    echo "  ip                Show local IP addresses"
+    echo "  vpn up            Connect to VPN"
+    echo "  new repo <name>   Create new GitHub repo"
+    echo "  vpn down          Disconnect VPN"
+    echo "  disk [path]       Disk usage analysis"
+    echo "  flash             Flash device via PXE"
+    echo "  xfs               Prepare disk for Longhorn"
+    echo "  speed             Speed test"
+    echo "  edit cron         Edit cron jobs"
+    echo "  list cron         List cron jobs"
+    echo "  kanata start      Start Kanata"
+    echo "  kanata restart    Restart Kanata"
+    echo "  kanata test       Test Kanata"
+    echo ""
+    echo "Kubernetes commands:"
+    echo "  kubernetes login certificate"
+    echo "  kubernetes login teleport"
+    echo "  kubernetes dashboard"
+    echo "  kubernetes approve csr"
+    echo "  kubernetes delete pod"
+    echo "  kubernetes debug [name]"
+    echo "  kubernetes remove finalizers"
+    echo "  kubernetes deleting"
+    echo "  kubernetes terminating"
+    echo "  kubernetes remove selected"
+    echo "  kubernetes longhorn test"
+    echo "  kubernetes install argocd"
+    echo ""
+    echo "Talos commands:"
+    echo "  talos dashboard"
+    echo "  talos upgrade"
+    echo "  talos update config [nodnamn]"
+    echo "  talos health"
+    echo "  talos update kubeconfig"
+    echo "  talos reboot all"
+    echo ""
+    echo "Setup commands:"
+    echo "  bootstrap mac"
+    echo "  setup argocd"
+    echo ""
+    echo "Install commands:"
+    echo "  install <package>"
+    echo "  i <package>"
+    echo "  uninstall <package>"
+    echo ""
+    echo "Config commands:"
+    echo "  chezmoi convert symlink"
+    echo "  config [tool]"
+    echo "  c [tool]"
+    echo "  source [tool]"
+    echo "  s [tool]"
+    echo ""
+    echo "PXE commands:"
+    echo "  pxe debug dhcp"
+    echo "  pxe debug tftp"
+    echo "  backup pxe"
+    echo "  setup pxe"
+    echo ""
+    echo "Coding commands:"
+    echo "  dev"
+    echo "  devpod delete"
+    echo "  login vault"
+    echo "  test"
+    echo "  commit"
+    echo ""
+    echo "Git commands:"
+    echo "  clone <name>"
+    echo ""
+    echo "Workflow commands:"
+    echo "  ci <project> [--push] [--multi] [--tag <tag>]"
+    echo ""
+    echo "AI commands:"
+    echo "  ai"
+    echo "  ai change agent"
+    echo "  ai set agent"
+    echo ""
+    echo "Ceph commands:"
+    echo "  ceph status"
+    echo "  ceph cluster"
+    echo "  ceph delete"
+}
+
+# Run logic if executed or sourced
+if [ "$1" = "--help" ]; then
+    show_help
+    exit 0
+elif [ $# -eq 0 ]; then
+    main
+else
+    # Parse subcommands
+    case "$1" in
+            docs) main_docs ;;
+            ip) main_ip ;;
+            vpn)
+                case "$2" in
+                    up) main_vpn_up ;;
+                    down) main_vpn_down ;;
+                    *) echo "Unknown vpn command: $2" ;;
+                esac
+                ;;
+            new)
+                case "$2" in
+                    repo) shift 2; main_new_repo "$@" ;;
+                    *) echo "Unknown new command: $2" ;;
+                esac
+                ;;
+            disk) shift; main_disk "$@" ;;
+            flash) main_flash ;;
+            xfs) main_xfs ;;
+            speed) main_speed ;;
+            edit)
+                case "$2" in
+                    cron) main_edit_cron ;;
+                    *) echo "Unknown edit command: $2" ;;
+                esac
+                ;;
+            list)
+                case "$2" in
+                    cron) main_list_cron ;;
+                    *) echo "Unknown list command: $2" ;;
+                esac
+                ;;
+            kanata)
+                case "$2" in
+                    start) main_kanata_start ;;
+                    restart) main_kanata_restart ;;
+                    test) main_kanata_test ;;
+                    *) echo "Unknown kanata command: $2" ;;
+                esac
+                ;;
+            kubernetes)
+                arg="$2"
+                if [ -n "$3" ]; then arg="$arg $3"; fi
+                case "$arg" in
+                    "login certificate") main_kubernetes_login_certificate ;;
+                    "login teleport") main_kubernetes_login_teleport ;;
+                    "dashboard") main_kubernetes_dashboard ;;
+                    "approve csr") main_kubernetes_approve_csr ;;
+                    "delete pod") main_kubernetes_delete_pod ;;
+                    "debug") shift 2; main_kubernetes_debug "$@" ;;
+                    "remove finalizers") main_kubernetes_remove_finalizers ;;
+                    "deleting") main_kubernetes_deleting ;;
+                    "terminating") main_kubernetes_terminating ;;
+                    "remove selected") main_kubernetes_remove_selected ;;
+                    "longhorn test") main_kubernetes_longhorn_test ;;
+                    "install argocd") main_kubernetes_install_argocd ;;
+                    *) echo "Unknown kubernetes command: $arg" ;;
+                esac
+                ;;
+            talos)
+                arg="$2"
+                if [ -n "$3" ]; then arg="$arg $3"; fi
+                case "$arg" in
+                    "dashboard") shift 2; main_talos_dashboard "$@" ;;
+                    "upgrade") main_talos_upgrade ;;
+                    "update config") shift 2; main_talos_update_config "$@" ;;
+                    "health") main_talos_health ;;
+                    "update kubeconfig") main_talos_update_kubeconfig ;;
+                    "reboot all") main_talos_reboot_all ;;
+                    *) echo "Unknown talos command: $arg" ;;
+                esac
+                ;;
+            bootstrap)
+                case "$2" in
+                    mac) main_bootstrap_mac ;;
+                    *) echo "Unknown bootstrap command: $2" ;;
+                esac
+                ;;
+            setup)
+                case "$2" in
+                    argocd) main_setup_argocd ;;
+                    pxe) main_setup_pxe ;;
+                    *) echo "Unknown setup command: $2" ;;
+                esac
+                ;;
+            install) shift; main_install "$@" ;;
+            i) shift; main_i "$@" ;;
+            uninstall) shift; main_uninstall "$@" ;;
+            chezmoi)
+                case "$2 $3" in
+                    "convert symlink") main_chezmoi_convert_symlink ;;
+                    *) echo "Unknown chezmoi command: $2 $3" ;;
+                esac
+                ;;
+            config) shift; main_config "$@" ;;
+            c) shift; main_c "$@" ;;
+            source) shift; main_source "$@" ;;
+            s) shift; main_s "$@" ;;
+            pxe)
+                case "$2 $3" in
+                    "debug dhcp") main_pxe_debug_dhcp ;;
+                    "debug tftp") main_pxe_debug_tftp ;;
+                    *) echo "Unknown pxe command: $2 $3" ;;
+                esac
+                ;;
+            backup)
+                case "$2" in
+                    pxe) main_backup_pxe ;;
+                    *) echo "Unknown backup command: $2" ;;
+                esac
+                ;;
+            dev) main_dev ;;
+            devpod)
+                case "$2" in
+                    delete) main_devpod_delete ;;
+                    *) echo "Unknown devpod command: $2" ;;
+                esac
+                ;;
+            login)
+                case "$2" in
+                    vault) main_login_vault ;;
+                    *) echo "Unknown login command: $2" ;;
+                esac
+                ;;
+            test) main_test ;;
+            commit) main_commit ;;
+            clone) shift; main_clone "$@" ;;
+            ci) shift; main_ci "$@" ;;
+            ai)
+                if [ -z "$2" ]; then
+                    main_ai
+                else
+                    case "$2 $3" in
+                        "change agent") main_ai_change_agent ;;
+                        "set agent") main_ai_set_agent ;;
+                        *) echo "Unknown ai command: $2 $3" ;;
+                    esac
+                fi
+                ;;
+            ceph)
+                case "$2" in
+                    status) main_ceph_status ;;
+                    cluster) main_ceph_cluster ;;
+                    delete) main_ceph_delete ;;
+                    *) echo "Unknown ceph command: $2" ;;
+                esac
+                ;;
+            *) echo "Unknown command: $1" ;;
+        esac
+fi

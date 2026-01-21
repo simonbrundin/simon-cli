@@ -22,6 +22,7 @@ $kubeconfig_content | save $temp_kubeconfig -f
 
 
   $env.KUBECONFIG = $temp_kubeconfig
+  export-env { $env.SPAM = 'eggs' }
   print $"(ansi blue)kubeconfig-variabeln(ansi reset)"
   print $env.KUBECONFIG
 
