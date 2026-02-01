@@ -28,7 +28,7 @@ update_agent_os_project() {
         return 1
     fi
 
-    ~/agent-os/scripts/project-install.sh --commands-only
+    ~/agent-os/scripts/project-install.sh --overwrite-commands
 
     if [ $? -eq 0 ]; then
         echo "  ✓ $project_name updated"
