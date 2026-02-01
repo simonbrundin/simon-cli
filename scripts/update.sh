@@ -25,15 +25,17 @@ update_agent_os_project() {
 
     if [ -n "$has_changes" ]; then
         echo "  ⚠ Skipping - uncommitted changes"
-        return 1
+        return 2
     fi
 
     ~/agent-os/scripts/project-install.sh --overwrite-commands
 
     if [ $? -eq 0 ]; then
         echo "  ✓ $project_name updated"
+        return 0
     else
         echo "  ✗ $project_name failed to update"
+        return 1
     fi
 }
 
@@ -91,14 +93,44 @@ main_update_agentos() {
     echo ""
 
     local failed=0
+    local skipped=0
+    local failed_projects=()
+    local skipped_projects=()
+
     for project in "${projects[@]}"; do
-        update_agent_os_project "$project" || ((failed++))
+        update_agent_os_project "$project"
+        local result=$?
+        if [ $result -eq 1 ]; then
+            ((failed++))
+            failed_projects+=("$(basename "$project")")
+        elif [ $result -eq 2 ]; then
+            ((skipped++))
+            skipped_projects+=("$(basename "$project")")
+        fi
     done
 
     echo ""
-    if [ $failed -eq 0 ]; then
-        echo "All projects updated successfully!"
-    else
-        echo "$failed project(s) failed to update."
+
+    if [ ${#skipped_projects[@]} -gt 0 ]; then
+        echo "=== Projects with uncommitted changes (commit to enable update) ==="
+        for p in "${skipped_projects[@]}"; do
+            echo "  - $p"
+        done
+        echo ""
+    fi
+
+    if [ ${#failed_projects[@]} -gt 0 ]; then
+        echo "=== Projects that failed to update ==="
+        for p in "${failed_projects[@]}"; do
+            echo "  - $p"
+        done
+        echo ""
+    fi
+
+    local success=$(( ${#projects[@]} - failed - skipped ))
+    echo "$success/${#projects[@]} projects updated successfully"
+
+    if [ $failed -gt 0 ] || [ $skipped -gt 0 ]; then
+        return 1
     fi
 }
