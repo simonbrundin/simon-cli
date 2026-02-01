@@ -15,6 +15,7 @@ source "$SCRIPT_DIR/scripts/config.sh"
 source "$SCRIPT_DIR/scripts/pxe.sh"
 source "$SCRIPT_DIR/scripts/ceph.sh"
 source "$SCRIPT_DIR/scripts/kubernetes.sh"
+source "$SCRIPT_DIR/scripts/update.sh"
 
 # Source functions
 source "$SCRIPT_DIR/functions.sh"
@@ -206,6 +207,12 @@ main() {
                     cluster) main_ceph_cluster ;;
                     delete) main_ceph_delete ;;
                     *) echo "Unknown ceph command: $2" ;;
+                esac
+                ;;
+            update)
+                case "$2" in
+                    agentos) main_update_agentos "$3" ;;
+                    *) echo "Unknown update command: $2" ;;
                 esac
                 ;;
             *) echo "Unknown command: $1" ;;
@@ -404,6 +411,9 @@ show_help() {
     echo "  ceph status"
     echo "  ceph cluster"
     echo "  ceph delete"
+    echo ""
+    echo "Update commands:"
+    echo "  update agentos [--no-projects]  Update Agent OS and optionally projects"
 }
 
 # Run logic if executed or sourced
@@ -559,6 +569,12 @@ else
                     cluster) main_ceph_cluster ;;
                     delete) main_ceph_delete ;;
                     *) echo "Unknown ceph command: $2" ;;
+                esac
+                ;;
+            update)
+                case "$2" in
+                    agentos) main_update_agentos "$3" ;;
+                    *) echo "Unknown update command: $2" ;;
                 esac
                 ;;
             *) echo "Unknown command: $1" ;;
