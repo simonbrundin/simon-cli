@@ -40,8 +40,6 @@ for func in $(declare -F | awk '{print $3}' | grep '^main_' | grep -v '^main$');
     commands+=("$cmd")
 done
 
-echo "Debug: Found ${#commands[@]} commands"
-
 main() {
     echo -e "\033[34m$banner\033[0m"
     echo "The most personal CLI ever <3"
@@ -52,15 +50,12 @@ main() {
 
     selectedCommand=$(printf '%s\n' "${commands[@]}" | fzf | tr -d '\n')
 
-    echo "Debug: selectedCommand='$selectedCommand'"
-
     if [ -z "$selectedCommand" ]; then
         echo "❌ Inget kommando valt"
-        return
+        exit 1
     fi
 
     echo -e "\033[34mKör kommando: \033[0m$selectedCommand"
-    echo "About to case with '$selectedCommand' (length ${#selectedCommand})"
 
     # Set arguments for subcommand parsing
     set -- $selectedCommand
