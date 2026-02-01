@@ -16,6 +16,7 @@ source "$SCRIPT_DIR/scripts/pxe.sh"
 source "$SCRIPT_DIR/scripts/ceph.sh"
 source "$SCRIPT_DIR/scripts/kubernetes.sh"
 source "$SCRIPT_DIR/scripts/update.sh"
+source "$SCRIPT_DIR/scripts/unifi.sh"
 
 # Source functions
 source "$SCRIPT_DIR/functions.sh"
@@ -82,6 +83,7 @@ main() {
             flash) main_flash ;;
             xfs) main_xfs ;;
             speed) main_speed ;;
+            reboot) main_reboot ;;
             edit)
                 case "$2" in
                     cron) main_edit_cron ;;
@@ -444,6 +446,7 @@ else
             flash) main_flash ;;
             xfs) main_xfs ;;
             speed) main_speed ;;
+            reboot) main_reboot ;;
             edit)
                 case "$2" in
                     cron) main_edit_cron ;;
