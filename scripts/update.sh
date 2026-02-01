@@ -21,7 +21,7 @@ update_agent_os_project() {
 
     cd "$project_path"
 
-    local has_changes=$(git status --porcelain 2>/dev/null)
+    local has_changes=$(git status --porcelain 2>/dev/null | grep -v "config.yml$")
 
     if [ -n "$has_changes" ]; then
         echo "  ⚠ Skipping - uncommitted changes"
