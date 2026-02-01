@@ -9,15 +9,44 @@ main_k() {
 
 main_kubernetes_login_certificate() {
     clustername="${1:-}"
-    # Läs in från 1Password
     mkdir -p ~/.op
     chmod 700 ~/.op
-    op signin --raw > ~/.op/session 2>/dev/null || true
-    session=$(cat ~/.op/session 2>/dev/null || echo "")
-    if [ -n "$session" ]; then
-        kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" --session "$session")
-    else
-        kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig")
+
+    kubeconfig_content=""
+
+    if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
+        kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" --session "$OP_SERVICE_ACCOUNT_TOKEN" 2>/dev/null)
+    fi
+
+    if [ -z "$kubeconfig_content" ]; then
+        session=""
+        max_attempts=5
+        attempt=1
+        delay=2
+
+        while [ $attempt -le $max_attempts ]; do
+            session=$(op signin --raw 2>/dev/null)
+            if [ -n "$session" ]; then
+                kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" --session "$session" 2>/dev/null)
+                if [ -n "$kubeconfig_content" ]; then
+                    break
+                fi
+            fi
+            attempt=$((attempt + 1))
+            if [ $attempt -le $max_attempts ]; then
+                sleep $delay
+            fi
+        done
+    fi
+
+    if [ -z "$kubeconfig_content" ]; then
+        echo -e "\033[31m[ERROR]\033[0m Kunde inte hämta kubeconfig från 1Password."
+        echo -e "\033[33mFelsökning:\033[0m"
+        echo -e "  1. Starta 1Password appen"
+        echo -e "  2. Gå till 1Password > Settings > Developer"
+        echo -e "  3. Kontrollera att 'Integrate with 1Password CLI' är aktiverat"
+        echo -e "  4. Vänta 10 sekunder och försök igen"
+        return 1
     fi
     echo -e "\033[34mFrån 1Password\033[0m"
 
