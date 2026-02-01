@@ -40,12 +40,26 @@ main_kubernetes_login_certificate() {
     fi
 
     if [ -z "$kubeconfig_content" ]; then
+        echo -e "\033[33mApp-integration misslyckades.\033[0m"
+        echo ""
+        echo "För att logga in manuellt, kör följande kommandon:"
+        echo ""
+        echo -e "\033[32m  export OP_BIOMETRIC_UNLOCK_ENABLED=false"
+        echo "  eval \$(op account add --signin)"
+        echo ""
+        echo "Eller använd service account token:"
+        echo "  export OP_SERVICE_ACCOUNT_TOKEN='<din-token>'"
+        echo -e "\033[0m"
+        return 1
+    fi
+
+    if [ -z "$kubeconfig_content" ]; then
         echo -e "\033[31m[ERROR]\033[0m Kunde inte hämta kubeconfig från 1Password."
         echo -e "\033[33mFelsökning:\033[0m"
         echo -e "  1. Starta 1Password appen"
         echo -e "  2. Gå till 1Password > Settings > Developer"
         echo -e "  3. Kontrollera att 'Integrate with 1Password CLI' är aktiverat"
-        echo -e "  4. Vänta 10 sekunder och försök igen"
+        echo -e "  4. Eller kör: eval \$(op signin)"
         return 1
     fi
     echo -e "\033[34mFrån 1Password\033[0m"
