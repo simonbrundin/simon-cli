@@ -69,6 +69,8 @@ main() {
             vpn)
                 case "$2" in
                     up) main_vpn_up ;;
+                    status) main_vpn_status ;;
+                    download) main_vpn_download ;;
                     down) main_vpn_down ;;
                     *) echo "Unknown vpn command: $2" ;;
                 esac
@@ -244,22 +246,61 @@ main_docs() {
 }
 
 main_ip() {
-    ifconfig | grep -E 'inet\s' | awk '{print $2}' | grep -v '127.0.0.1'
+    ips=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1')
+    first_ip=$(echo "$ips" | head -1)
+    rest_ips=$(echo "$ips" | tail -n +2)
+    echo ""
+    echo "  ┌─[$first_ip]─┐"
+    echo "  └─────────────┘"
+    echo ""
+    echo "$rest_ips"
 }
 
 main_vpn_up() {
-    echo "Ansluter till VPN..."
-    networksetup -connectpppoeservice "UniFi Teleport"
+    echo -e "\033[34m🔐 Ansluter till UniFi VPN...\033[0m"
 
-    while true; do
-        status=$(networksetup -showpppoestatus "UniFi Teleport" | tr -d '\n')
-        if [ "$status" = "connected" ]; then
-            echo "VPN ansluten!"
-            break
-        fi
-        sleep 1
-        echo "."
-    done
+    if command -v networksetup >/dev/null 2>&1 && networksetup -showpppoestatus "UniFi Teleport" >/dev/null 2>&1; then
+        echo "Försöker med UniFi Teleport..."
+        networksetup -connectpppoeservice "UniFi Teleport" 2>&1
+
+        local status
+        for i in {1..10}; do
+            status=$(networksetup -showpppoestatus "UniFi Teleport" 2>/dev/null | tr -d '\n')
+            if [ "$status" = "connected" ]; then
+                echo -e "\033[32m✅ UniFi Teleport ansluten!\033[0m"
+                return 0
+            fi
+            sleep 1
+            echo "."
+        done
+        echo "Teleport anslöt inte. Försöker WireGuard..."
+    fi
+
+    local WIREGUARD_DIR="$HOME/.wireguard"
+    local WIREGUARD_CONFIG="$WIREGUARD_DIR/unifi.conf"
+
+    if ! command -v wg-quick >/dev/null 2>&1; then
+        echo -e "\033[31m❌ WireGuard är inte installerat\033[0m"
+        return 1
+    fi
+
+    if [ ! -f "$WIREGUARD_CONFIG" ]; then
+        echo -e "\033[31m❌ Ingen WireGuard-config hittad\033[0m"
+        echo "Spara config som ~/.wireguard/unifi.conf"
+        return 1
+    fi
+
+    echo "Startar WireGuard..."
+    sudo wg-quick up unifi 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo -e "\033[32m✅ WireGuard ansluten!\033[0m"
+        echo ""
+        echo "Testa anslutning:"
+        echo "  ping 10.10.10.2"
+    else
+        echo -e "\033[31m❌ Kunde inte ansluta till WireGuard\033[0m"
+    fi
 }
 
 main_new_repo() {
@@ -289,7 +330,64 @@ main_new_repo() {
 }
 
 main_vpn_down() {
-    networksetup -disconnectpppoeservice "UniFi Teleport"
+    echo -e "\033[34m🔒 Kopplar från WireGuard...\033[0m"
+    sudo wg-quick down unifi 2>&1 || echo "Ingen WireGuard-anslutning aktiv"
+    echo -e "\033[32m✅ WireGuard frånkopplad\033[0m"
+}
+
+main_vpn_status() {
+    echo -e "\033[34m📡 WireGuard-status:\033[0m"
+    wg 2>&1 || echo "Ingen WireGuard-interface aktiv"
+}
+
+main_vpn_download() {
+    local unifi_controller="https://10.1.1.1"
+    local unifi_api_key
+
+    mkdir -p ~/.op
+    chmod 700 ~/.op
+    op signin --raw > ~/.op/session 2>/dev/null
+
+    unifi_api_key=$(op read "op://Private/Ubiquiti/API-key local" 2>/dev/null)
+
+    if [ -z "$unifi_api_key" ]; then
+        echo -e "\033[31m❌ Kunde inte hämta API-nyckel från 1Password\033[0m"
+        rm -f ~/.op/session
+        return 1
+    fi
+
+    echo -e "\033[34m🌐 Hämtar WireGuard-klienter från UniFi...\033[0m"
+
+    local response
+    response=$(curl -s -k -X GET "${unifi_controller}/proxy/network/api/s/default/vpn/wireguardclients" \
+        -H "X-API-Key: $unifi_api_key" \
+        -H "Accept: application/json" 2>/dev/null)
+
+    if ! echo "$response" | jq -e '.data' >/dev/null 2>&1; then
+        echo -e "\033[31m❌ Kunde inte hämta WireGuard-klienter\033[0m"
+        echo "Gå till https://10.1.1.1 och skapa en WireGuard-klient manuellt"
+        rm -f ~/.op/session
+        return 1
+    fi
+
+    local clients
+    clients=$(echo "$response" | jq -r '.data[] | "\(.name) - \(.enabled)"' 2>/dev/null)
+
+    if [ -z "$clients" ]; then
+        echo "Inga WireGuard-klienter hittades. Skapa en i UniFi Controller:"
+        echo "  Settings → VPN → WireGuard → Add Client"
+        rm -f ~/.op/session
+        return 1
+    fi
+
+    echo ""
+    echo "Tillgängliga WireGuard-klienter:"
+    echo "$clients"
+    echo ""
+    echo "För att ladda ner en specifik config, gå till:"
+    echo "  ${unifi_controller}/proxy/network/api/s/default/vpn/wireguardclients/<client-id>/download"
+
+    rm -f ~/.op/session
 }
 
 main_disk() {
@@ -432,6 +530,8 @@ else
             vpn)
                 case "$2" in
                     up) main_vpn_up ;;
+                    status) main_vpn_status ;;
+                    download) main_vpn_download ;;
                     down) main_vpn_down ;;
                     *) echo "Unknown vpn command: $2" ;;
                 esac

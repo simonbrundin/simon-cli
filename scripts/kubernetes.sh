@@ -9,70 +9,31 @@ main_k() {
 
 main_kubernetes_login_certificate() {
     clustername="${1:-}"
-    mkdir -p ~/.op
-    chmod 700 ~/.op
 
-    kubeconfig_content=""
+    echo -e "\033[34m🔐 Loggar in i 1Password...\033[0m"
+    eval $(op account add --signin 2>/dev/null)
 
-    if [ -n "$OP_SERVICE_ACCOUNT_TOKEN" ]; then
-        kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" --session "$OP_SERVICE_ACCOUNT_TOKEN" 2>/dev/null)
-    fi
-
-    if [ -z "$kubeconfig_content" ]; then
-        session=""
-        max_attempts=5
-        attempt=1
-        delay=2
-
-        while [ $attempt -le $max_attempts ]; do
-            session=$(op signin --raw 2>/dev/null)
-            if [ -n "$session" ]; then
-                kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" --session "$session" 2>/dev/null)
-                if [ -n "$kubeconfig_content" ]; then
-                    break
-                fi
-            fi
-            attempt=$((attempt + 1))
-            if [ $attempt -le $max_attempts ]; then
-                sleep $delay
-            fi
-        done
-    fi
-
-    if [ -z "$kubeconfig_content" ]; then
-        echo -e "\033[33mApp-integration misslyckades.\033[0m"
-        echo ""
-        echo "För att logga in manuellt, kör följande kommandon:"
-        echo ""
-        echo -e "\033[32m  export OP_BIOMETRIC_UNLOCK_ENABLED=false"
-        echo "  eval \$(op account add --signin)"
-        echo ""
-        echo "Eller använd service account token:"
-        echo "  export OP_SERVICE_ACCOUNT_TOKEN='<din-token>'"
-        echo -e "\033[0m"
+    if ! op whoami &>/dev/null; then
+        echo -e "\033[31m[ERROR]\033[0m Kunde inte logga in i 1Password."
         return 1
     fi
+
+    echo -e "\033[34m📄 Hämtar kubeconfig...\033[0m"
+    kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" 2>/dev/null)
 
     if [ -z "$kubeconfig_content" ]; then
         echo -e "\033[31m[ERROR]\033[0m Kunde inte hämta kubeconfig från 1Password."
-        echo -e "\033[33mFelsökning:\033[0m"
-        echo -e "  1. Starta 1Password appen"
-        echo -e "  2. Gå till 1Password > Settings > Developer"
-        echo -e "  3. Kontrollera att 'Integrate with 1Password CLI' är aktiverat"
-        echo -e "  4. Eller kör: eval \$(op signin)"
+        echo -e "\033[33mKontrollera:\033[0m"
+        echo -e "  1. Att 'Talos/kubeconfig/kubeconfig' finns i ditt valv"
+        echo -e "  2. Att du har åtkomst till detta objekt"
         return 1
     fi
-    echo -e "\033[34mFrån 1Password\033[0m"
 
-    # Skriv till en temporär fil
     temp_kubeconfig="/tmp/kubeconfig-certificate"
-    echo -e "\033[34mPath för kubeconfig\033[0m"
-    echo -e "\033[32m$temp_kubeconfig\033[0m"
+    echo -e "\033[34mSparar kubeconfig till:\033[0m \033[32m$temp_kubeconfig\033[0m"
     echo "$kubeconfig_content" > "$temp_kubeconfig"
 
-    # Testa inloggning
     if kubectl get nodes --kubeconfig "$temp_kubeconfig" &> /dev/null; then
-        # Uppdatera .bashrc med KUBECONFIG till temp
         bashrc="$HOME/.bashrc"
         if grep -q "^export KUBECONFIG=" "$bashrc"; then
             sed -i "s|^export KUBECONFIG=.*|export KUBECONFIG=$temp_kubeconfig|" "$bashrc"
@@ -80,7 +41,6 @@ main_kubernetes_login_certificate() {
             echo "export KUBECONFIG=$temp_kubeconfig" >> "$bashrc"
         fi
         export KUBECONFIG="$temp_kubeconfig"
-        echo -e "\033[34mKUBECONFIG uppdaterad i ~/.bashrc till $temp_kubeconfig\033[0m"
         echo -e "\033[32mInloggning lyckades!\033[0m"
     else
         echo -e "\033[31mInloggning misslyckades – kontrollera certifikat eller nätverk.\033[0m"
