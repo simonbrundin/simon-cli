@@ -2,10 +2,33 @@
 
 # Converted from talos.nu
 
+export TALOSCONFIG=/home/simon/.talos/config
+
 main_talos_dashboard() {
     ip="${1:-10.10.10.11}"
-    nodes=$(yq '.nodes[] | select(.initialized == true) | .name' /home/simon/repos/infrastructure/talos/nodes.yaml | tr '\n' ',')
-    nodesString="${nodes%,}"
+    
+    # Get all nodes from config
+    all_nodes=$(yq '.nodes[] | select(.initialized == true) | .ip' /home/simon/repos/infrastructure/talos/nodes.yaml)
+    
+    # Test which nodes are reachable
+    reachable_nodes=""
+    for node in $all_nodes; do
+        if timeout 2 talosctl -n "$node" version >/dev/null 2>&1; then
+            reachable_nodes="${reachable_nodes}${node},"
+        else
+            echo "⚠️  Nod $node är inte tillgänglig, hoppar över..."
+        fi
+    done
+    
+    # Remove trailing comma
+    nodesString="${reachable_nodes%,}"
+    
+    if [ -z "$nodesString" ]; then
+        echo "❌ Inga noder är tillgängliga!"
+        return 1
+    fi
+    
+    echo "Ansluter till noder: $nodesString"
     talosctl dashboard -n "$nodesString"
 }
 
@@ -44,22 +67,56 @@ main_talos_update_config() {
     op read op://talos/talosconfig/talosconfig -o talosconfig -f
     chmod 666 secrets.yaml talosconfig
 
-    nodes=$(yq '.nodes[]' nodes.yaml)
     cluster_name="cluster1"
     endpoint="https://10.10.10.10:6443"
     config_dir="generated"
+    controlplane_ip=$(yq '.nodes[] | select(.role == "controlplane") | .ip' nodes.yaml | head -1 | tr -d '"')
 
+    # Använd systemets talosconfig om den finns och fungerar
+    echo "Kontrollerar talosconfig..."
+    if [ -f "$HOME/.talos/config" ]; then
+        echo "Använder systemets talosconfig från ~/.talos/config"
+        cp "$HOME/.talos/config" ./talosconfig
+        chmod 666 talosconfig
+    fi
+    
+    export TALOSCONFIG=./talosconfig
+    
+    # Kontrollera om certifikatet fungerar
+    if ! talosctl version -n "$controlplane_ip" --short >/dev/null 2>&1; then
+        echo "⚠️  Varning: Kan inte ansluta till kontrollplanet med nuvarande certifikat"
+        echo "    Kontrollera att ~/.talos/config är uppdaterad"
+    else
+        echo "✅ Certifikatet fungerar"
+    fi
+
+    # Get Talos version from controlplane
+    echo "Hämtar Talos-version från klustret..."
+    talos_version=$(talosctl version -n "$controlplane_ip" --short 2>/dev/null | grep "Tag:" | awk '{print $2}' | sed 's/^v//' || echo "")
+    if [ -n "$talos_version" ]; then
+        echo "Hittade Talos version: v$talos_version"
+        talos_version_flag="--talos-version v$talos_version"
+        # Kubernetes 1.30.x är kompatibel med Talos 1.11.x
+        k8s_version="v1.30.0"
+        echo "Använder Kubernetes version: $k8s_version"
+        k8s_version_flag="--kubernetes-version $k8s_version"
+    else
+        echo "Kunde inte hämta Talos-version, använder senaste"
+        talos_version_flag=""
+        k8s_version_flag=""
+    fi
+
+    # Get list of node names to process
     if [ -z "$nodnamn" ]; then
         echo "Uppdaterar alla noder..."
-        target_nodes="$nodes"
+        node_names=$(yq '.nodes[].name' nodes.yaml)
     else
-        found_node=$(echo "$nodes" | yq "select(.name == \"$nodnamn\")")
-        if [ -z "$found_node" ]; then
+        if ! yq ".nodes[] | select(.name == \"$nodnamn\")" nodes.yaml | grep -q .; then
             echo "Ingen nod med namn $nodnamn hittades."
             return
         fi
         echo "Uppdaterar endast noden $nodnamn..."
-        target_nodes="$found_node"
+        node_names="$nodnamn"
     fi
 
     if [ -d "$config_dir" ]; then
@@ -67,12 +124,29 @@ main_talos_update_config() {
     fi
     mkdir "$config_dir"
 
-    echo "$target_nodes" | while read -r node; do
-        node_name=$(echo "$node" | yq '.name')
-        node_ip=$(echo "$node" | yq '.ip')
+    echo "$node_names" | while IFS= read -r node_name; do
+        # Get node data using the name
+        node_name=$(echo "$node_name" | tr -d '"')
+        node_ip=$(yq ".nodes[] | select(.name == \"$node_name\") | .ip" nodes.yaml | tr -d '"')
+        role=$(yq ".nodes[] | select(.name == \"$node_name\") | .role" nodes.yaml | tr -d '"')
+        initialized=$(yq ".nodes[] | select(.name == \"$node_name\") | .initialized" nodes.yaml | tr -d '"')
+        
         echo "Bearbetar nod: $node_name med IP $node_ip"
 
-        nodePatches=$(echo "$node" | yq '.patches[]' | sed 's/^/--config-patch=@patches\//' | tr '\n' ' ')
+        # Kontrollera om noden är nåbar
+        if ! ping -c 1 -W 2 "$node_ip" >/dev/null 2>&1; then
+            echo "❌ Noden $node_name ($node_ip) är inte nåbar via nätverket."
+            echo "   Kontrollera att:"
+            echo "   - Datorn är påslagen"
+            echo "   - Nätverkskabeln är ansluten"
+            echo "   - IP-adressen är korrekt (förväntat: $node_ip)"
+            echo "   Hoppar över denna nod..."
+            echo "-----------------------------"
+            continue
+        fi
+        echo "✅ Noden är nåbar via nätverket"
+
+        nodePatches=$(yq ".nodes[] | select(.name == \"$node_name\") | .patches[]" nodes.yaml 2>/dev/null | sed 's/^/--config-patch=@patches\//' | tr '\n' ' ')
 
         if [ "$nodePatches" = "--config-patch=@patches/" ]; then
             echo "Inga patchar hittades för noden $node_ip"
@@ -83,11 +157,16 @@ main_talos_update_config() {
 
         output_types="controlplane,worker,talosconfig"
 
-        base_cmd="talosctl gen config $cluster_name $endpoint --output-types=$output_types --with-docs=false --with-examples=false --config-patch-control-plane=@patches/controlplane.yaml --config-patch-worker=@patches/worker.yaml -o $config_dir --with-secrets=secrets.yaml --force --config-patch=@patches/all.yaml"
+        base_cmd="talosctl gen config $cluster_name $endpoint --output-types=$output_types --with-docs=false --with-examples=false --config-patch-control-plane=@patches/controlplane.yaml --config-patch-worker=@patches/worker.yaml -o $config_dir --with-secrets=secrets.yaml --force --config-patch=@patches/all.yaml $talos_version_flag $k8s_version_flag"
 
-        role=$(echo "$node" | yq '.role')
         if [ "$role" = "worker" ]; then
-            base_cmd="$base_cmd --config-patch-worker=@patches/disks/$node_name.yaml"
+            disk_patch="patches/disks/$node_name.yaml"
+            if [ -f "$disk_patch" ] && [ -s "$disk_patch" ]; then
+                # Check if file has actual content (not just comments)
+                if grep -v '^#' "$disk_patch" | grep -v '^[[:space:]]*$' | grep -q .; then
+                    base_cmd="$base_cmd --config-patch-worker=@$disk_patch"
+                fi
+            fi
         fi
 
         full_cmd="$base_cmd $nodePatches"
@@ -105,18 +184,49 @@ main_talos_update_config() {
             continue
         fi
 
-        initialized=$(echo "$node" | yq '.initialized')
-        if [ "$initialized" = "false" ]; then
-            echo "Noden $node_ip är inte initialiserad, applicerar konfigurationen."
-            talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file"
+        # Kontrollera nodens verkliga status genom att försöka ansluta
+        echo "Kontrollerar nodens status..."
+        node_in_maintenance=false
+        node_initialized=false
+        
+        # Testa om noden är i maintenance mode (svarar på --insecure)
+        if talosctl apply-config --insecure --nodes "$node_ip" --dry-run --file "$config_file" >/dev/null 2>&1; then
+            node_in_maintenance=true
+            echo "ℹ️  Noden är i maintenance mode (ej initialiserad)"
+        elif talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --dry-run --file "$config_file" >/dev/null 2>&1; then
+            node_initialized=true
+            echo "ℹ️  Noden är initialiserad och medlem i klustret"
         else
-            echo "Noden $node_ip är redan initialiserad, applicerar konfigurationen."
-            talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file"
-            echo "klart"
+            # Kan inte avgöra, försök med maintenance mode först
+            echo "ℹ️  Kan inte avgöra nodens status, försöker med maintenance mode..."
+            node_in_maintenance=true
         fi
-
-        echo "Namnger noden $node_ip till $node_name"
-        talosctl --talosconfig talosconfig patch mc -p "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}" -n "$node_ip"
+        
+        if [ "$node_in_maintenance" = "true" ]; then
+            echo "📝 Applicerar konfiguration i maintenance mode..."
+            if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file"; then
+                echo "✅ Konfiguration applicerad!"
+                echo "⚠️  Noden måste startas om och boota upp helt innan hostname kan sättas."
+                echo "   Vänta 2-3 minuter och kör sedan: ./simon talos update config $node_name"
+                # Uppdatera nodes.yaml
+                yq -i ".nodes[] |= select(.name == \"$node_name\").initialized = true" nodes.yaml
+            else
+                echo "❌ Kunde inte applicera konfiguration"
+            fi
+        elif [ "$node_initialized" = "true" ]; then
+            echo "Noden $node_ip är redan initialiserad, applicerar konfigurationen."
+            if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file"; then
+                echo "✅ Konfiguration applicerad"
+                echo "Namnger noden $node_ip till $node_name"
+                if talosctl --talosconfig talosconfig patch mc -p "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}" -n "$node_ip"; then
+                    echo "✅ Hostname satt till $node_name"
+                else
+                    echo "⚠️  Kunde inte sätta hostname"
+                fi
+            else
+                echo "❌ Kunde inte applicera konfiguration"
+            fi
+        fi
 
         echo "-----------------------------"
     done

@@ -131,7 +131,7 @@ main() {
                 case "$arg" in
                     "dashboard") shift 2; main_talos_dashboard "$@" ;;
                     "upgrade") main_talos_upgrade ;;
-                    "update config") shift 2; main_talos_update_config "$@" ;;
+                    "update config") shift 3; main_talos_update_config "$@" ;;
                     "health") main_talos_health ;;
                     "update kubeconfig") main_talos_update_kubeconfig ;;
                     "reboot all") main_talos_reboot_all ;;
@@ -592,7 +592,7 @@ else
                 case "$arg" in
                     "dashboard") shift 2; main_talos_dashboard "$@" ;;
                     "upgrade") main_talos_upgrade ;;
-                    "update config") shift 2; main_talos_update_config "$@" ;;
+                    "update config") shift 3; main_talos_update_config "$@" ;;
                     "health") main_talos_health ;;
                     "update kubeconfig") main_talos_update_kubeconfig ;;
                     "reboot all") main_talos_reboot_all ;;

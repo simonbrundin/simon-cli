@@ -11,10 +11,28 @@ main_kubernetes_login_certificate() {
     clustername="${1:-}"
 
     echo -e "\033[34m🔐 Loggar in i 1Password...\033[0m"
-    eval $(op account add --signin 2>/dev/null)
+
+    # Ensure ~/.op directory exists with correct permissions
+    mkdir -p ~/.op
+    chmod 700 ~/.op
+
+    # Check for existing valid session first
+    if [ -f ~/.op/session ] && [ -s ~/.op/session ]; then
+        export OP_SESSION_TOKEN=$(cat ~/.op/session)
+        if ! op whoami &>/dev/null; then
+            # Session expired, get new one
+            op signin --raw > ~/.op/session 2>/dev/null
+            export OP_SESSION_TOKEN=$(cat ~/.op/session)
+        fi
+    else
+        # No session file, create new session
+        op signin --raw > ~/.op/session 2>/dev/null
+        export OP_SESSION_TOKEN=$(cat ~/.op/session)
+    fi
 
     if ! op whoami &>/dev/null; then
         echo -e "\033[31m[ERROR]\033[0m Kunde inte logga in i 1Password."
+        rm -f ~/.op/session
         return 1
     fi
 
