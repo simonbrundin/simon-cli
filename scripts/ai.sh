@@ -6,6 +6,10 @@ main_ai() {
     eval "$AI_AGENT"
 }
 
+main_ai_tui() {
+    (cd /home/simon/repos/ai && go build -o /home/simon/repos/ai/ai-tui . && /home/simon/repos/ai/ai-tui)
+}
+
 main_ai_change_agent() {
     agents=("opencode" "crush" "claude")
     selected=$(fzfSelect "${agents[@]}")

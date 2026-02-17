@@ -201,6 +201,8 @@ main() {
                     case "$2 $3" in
                         "change agent") main_ai_change_agent ;;
                         "set agent") main_ai_set_agent ;;
+                        "tui") main_ai_tui ;;
+                        "tui ") main_ai_tui ;;
                         *) echo "Unknown ai command: $2 $3" ;;
                     esac
                 fi
@@ -502,12 +504,12 @@ show_help() {
     echo "Workflow commands:"
     echo "  ci <project> [--push] [--multi] [--tag <tag>]"
     echo ""
-    echo "AI commands:"
+echo "AI commands:"
     echo "  ai"
     echo "  ai change agent"
     echo "  ai set agent"
+    echo "  ai tui"
     echo ""
-    echo "Ceph commands:"
     echo "  ceph status"
     echo "  ceph cluster"
     echo "  ceph delete"
@@ -662,6 +664,8 @@ else
                     case "$2 $3" in
                         "change agent") main_ai_change_agent ;;
                         "set agent") main_ai_set_agent ;;
+                        "tui") main_ai_tui ;;
+                        "tui ") main_ai_tui ;;
                         *) echo "Unknown ai command: $2 $3" ;;
                     esac
                 fi
