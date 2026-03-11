@@ -269,7 +269,242 @@ main_kubernetes_longhorn_test() {
     echo "$machine_disks"
 }
 
-main_kubernetes_install_argocd() {
-    kubectl create namespace argocd
-    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml
+main_kubernetes_iscsi_health() {
+    echo -e "\n\033[34m7. Talos Services...\033[0m"
+
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
+    local nodes_with_volumes="worker-1 worker-2 worker-3 worker-4 worker-5 worker-6 worker-7 worker-8"
+
+    local unhealthy_services=""
+
+    for node in $nodes_with_volumes; do
+        local ip
+        ip=$(yq -r ".nodes[] | select(.name == \"$node\") | .ip" "$nodes_yaml")
+
+        if [ -z "$ip" ] || [ "$ip" == "null" ]; then
+            echo -e "\033[33m  ⚠️  $node: IP inte hittad i nodes.yaml\033[0m"
+            continue
+        fi
+
+        local ext_iscsid_state
+        ext_iscsid_state=$(talosctl service ext-iscsid -n "$ip" 2>/dev/null | awk '/^STATE/ {print $2}')
+
+        if [ -z "$ext_iscsid_state" ]; then
+            ext_iscsid_state="NoResponse"
+        fi
+
+        if [ "$ext_iscsid_state" == "Running" ]; then
+            echo -e "\033[32m  ✓ $node: ext-iscsid Running\033[0m"
+        else
+            echo -e "\033[31m  ✗ $node: ext-iscsid $ext_iscsid_state\033[0m"
+            unhealthy_services="$unhealthy_services $node:ext-iscsid:$ext_iscsid_state"
+        fi
+
+        local services_output
+        services_output=$(talosctl services -n "$ip" 2>/dev/null)
+
+        if [ -z "$services_output" ]; then
+            echo -e "\033[33m  ⚠️  $node: Kunde inte hämta tjänster\033[0m"
+            continue
+        fi
+
+        local node_unhealthy
+        node_unhealthy=$(echo "$services_output" | awk 'NR>1 && $4 != "OK" && $2 != "ext-iscsid" {print $2":"$4}')
+        if [ -n "$node_unhealthy" ]; then
+            while IFS=: read -r service health; do
+                echo -e "\033[31m    ✗ $service: $health\033[0m"
+                unhealthy_services="$unhealthy_services $node:$service:$health"
+            done <<< "$node_unhealthy"
+        fi
+    done
+
+    if [ -n "$unhealthy_services" ]; then
+        echo -e "\033[33m  Services: $(echo $unhealthy_services | wc -w) tjänster med problem\033[0m"
+    else
+        echo -e "\033[32m  Alla tjänster OK\033[0m"
+    fi
+}
+
+main_kubernetes_health() {
+    echo "🔍 Kubernetes Health Check"
+    echo "=========================="
+
+    local required_commands=("ping" "talosctl" "kubectl" "yq")
+    echo -e "\n\033[34m0. Kontrollerar required tools...\033[0m"
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            echo -e "\033[31m❌ $cmd not found\033[0m"
+            return 1
+        fi
+        echo -e "\033[32m✓ $cmd\033[0m"
+    done
+
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
+    if [ ! -f "$nodes_yaml" ]; then
+        echo -e "\033[31m❌ nodes.yaml not found: $nodes_yaml\033[0m"
+        return 1
+    fi
+
+    echo -e "\n\033[34m1. PING NODER...\033[0m"
+
+    local controlplane_ips worker_ips
+    controlplane_ips=$(yq -r '.nodes[] | select(.role == "controlplane") | .ip' "$nodes_yaml")
+    worker_ips=$(yq -r '.nodes[] | select(.role == "worker") | .ip' "$nodes_yaml")
+
+    echo -e "\033[33m  Controlplane nodes...\033[0m"
+    while IFS= read -r ip; do
+        if [ -n "$ip" ]; then
+            if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
+                echo -e "\033[32m    ✓ $ip responds\033[0m"
+            else
+                echo -e "\033[31m    ✗ $ip FAILED\033[0m"
+                echo -e "\033[31m❌ Controlplane node failed, aborting\033[0m"
+                return 1
+            fi
+        fi
+    done <<< "$controlplane_ips"
+
+    echo -e "\033[33m  Worker nodes...\033[0m"
+    local total_workers=0 failed_workers=0
+    while IFS= read -r ip; do
+        if [ -n "$ip" ]; then
+            total_workers=$((total_workers + 1))
+            if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
+                echo -e "\033[32m    ✓ $ip responds\033[0m"
+            else
+                echo -e "\033[31m    ✗ $ip FAILED\033[0m"
+                failed_workers=$((failed_workers + 1))
+            fi
+        fi
+    done <<< "$worker_ips"
+
+    if [ "$total_workers" -gt 0 ]; then
+        local failure_percentage=$((failed_workers * 100 / total_workers))
+        if [ "$failure_percentage" -gt 26 ]; then
+            echo -e "\033[31m❌ $failed_workers/$total_workers workers failed ($failure_percentage% > 26%), aborting\033[0m"
+            return 1
+        fi
+    fi
+
+    local talos_node="10.10.10.11"
+
+    echo -e "\n\033[34m2. talosctl health...\033[0m"
+    local talos_output
+    talos_output=$(talosctl health --nodes "$talos_node" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo -e "\033[31m❌ talosctl health failed\033[0m"
+        echo "$talos_output"
+        return 1
+    fi
+    local green=$'\033[32m'
+    local reset=$'\033[0m'
+    echo "$talos_output" | while IFS= read -r line; do
+        if [[ "$line" == *": OK" ]] || [[ "$line" == *"..." ]]; then
+            echo "${green}${line}${reset}"
+        else
+            echo "$line"
+        fi
+    done
+
+    echo -e "\n\033[34m5. kubectl get nodes...\033[0m"
+    kubectl get nodes | while IFS= read -r line; do
+        if echo "$line" | grep -q "Ready"; then
+            echo -e "\033[32m✓ $line\033[0m"
+        else
+            echo "$line"
+        fi
+    done
+
+    echo -e "\n\033[34m6. ArgoCD pods...\033[0m"
+    local green=$'\033[32m'
+    local red=$'\033[31m'
+    local reset=$'\033[0m'
+    local has_error=0
+    while IFS= read -r line; do
+        if [[ "$line" == *"Running"* ]] || [[ "$line" == *"Completed"* ]]; then
+            echo -e "${green}$line${reset}"
+        else
+            echo -e "${red}$line${reset}"
+            has_error=1
+        fi
+    done < <(kubectl get pods -n argocd --no-headers 2>/dev/null)
+    if [ $has_error -eq 1 ]; then
+        echo -e "\n\033[31m❌ Det finns poddar som inte kör i argocd\033[0m"
+        return 1
+    fi
+
+    echo -e "\n\033[34m7. Longhorn status...\033[0m"
+    local green=$'\033[32m'
+    local red=$'\033[31m'
+    local yellow=$'\033[33m'
+    local reset=$'\033[0m'
+
+    local volumes
+    volumes=$(kubectl get volumes -n longhorn-system --no-headers 2>/dev/null)
+    local healthy degraded faulted unknown detached
+    healthy=$(echo "$volumes" | grep -c "healthy" || echo 0)
+    degraded=$(echo "$volumes" | grep -c "degraded" || echo 0)
+    faulted=$(echo "$volumes" | grep -c "faulted" || echo 0)
+    unknown=$(echo "$volumes" | grep -c "unknown" || echo 0)
+    detached=$(echo "$volumes" | grep -c "detached" || echo 0)
+
+    echo "Volumes:"
+    echo -e "  ${green}Healthy: $healthy${reset}"
+    echo -e "  ${yellow}Degraded: $degraded${reset}"
+    echo -e "  ${red}Fault: $faulted${reset}"
+    echo -e "  ${red}Unknown: $unknown${reset}"
+    echo -e "  Detached: $detached"
+
+    echo "Nodes:"
+    local unschedulable_disks=0
+    local schedulable_disks=0
+    for node in $(kubectl get nodes.longhorn.io -n longhorn-system -o jsonpath='{.items[*].metadata.name}'); do
+        local node_schedulable=0
+        local node_total=0
+        local disk_status
+        disk_status=$(kubectl get nodes.longhorn.io "$node" -n longhorn-system -o jsonpath='{.status.diskStatus}' 2>/dev/null)
+        if [ -n "$disk_status" ] && [ "$disk_status" != "null" ]; then
+            for disk in $(echo "$disk_status" | jq -r 'keys[]'); do
+                node_total=$((node_total + 1))
+                local schedulable
+                schedulable=$(echo "$disk_status" | jq -r ".[\"$disk\"].conditions[] | select(.type == \"Schedulable\") | .status")
+                if [ "$schedulable" = "True" ]; then
+                    node_schedulable=$((node_schedulable + 1))
+                fi
+            done
+        fi
+        if [ "$node_schedulable" -eq "$node_total" ] && [ "$node_total" -gt 0 ]; then
+            echo -e "  ${green}$node: $node_schedulable/$node_total diskar schedulable${reset}"
+            schedulable_disks=$((schedulable_disks + 1))
+        else
+            echo -e "  ${yellow}$node: $node_schedulable/$node_total diskar schedulable${reset}"
+            unschedulable_disks=$((unschedulable_disks + 1))
+        fi
+    done
+
+    if [ "$faulted" -gt 0 ] || [ "$unknown" -gt 0 ] || [ "$unschedulable_disks" -gt 0 ]; then
+        echo -e "\n\033[31m❌ Det finns problem med Longhorn\033[0m"
+        return 1
+    fi
+
+    echo -e "\n\033[34m8. Vault unsealed status...\033[0m"
+    local vault_pod
+    vault_pod=$(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -z "$vault_pod" ]; then
+        echo -e "\033[31m❌ No Vault pod found in namespace vault\033[0m"
+        return 1
+    fi
+    local vault_status
+    vault_status=$(kubectl exec -n vault "$vault_pod" -- vault status 2>/dev/null | grep "Seal Status" | awk '{print $3}')
+    if [ "$vault_status" = "unsealed" ]; then
+        echo -e "\033[32m  ✓ Vault is unsealed\033[0m"
+    else
+        echo -e "\033[31m❌ Vault is NOT unsealed (status: $vault_status)\033[0m"
+        return 1
+    fi
+
+    main_kubernetes_iscsi_health
+
+    echo -e "\n\033[32m✅ Alla health checks klar!\033[0m"
+    return 0
 }

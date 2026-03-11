@@ -122,6 +122,7 @@ main() {
                     "remove selected") main_kubernetes_remove_selected ;;
                     "longhorn test") main_kubernetes_longhorn_test ;;
                     "install argocd") main_kubernetes_install_argocd ;;
+                    "health") main_kubernetes_health ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
                 esac
                 ;;
@@ -585,6 +586,7 @@ else
                     "remove selected") main_kubernetes_remove_selected ;;
                     "longhorn test") main_kubernetes_longhorn_test ;;
                     "install argocd") main_kubernetes_install_argocd ;;
+                    "health") main_kubernetes_health ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
                 esac
                 ;;

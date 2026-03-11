@@ -33,7 +33,7 @@ main_talos_dashboard() {
 }
 
 main_talos_upgrade() {
-    latestVersions=$(curl -s "https://api.github.com/repos/siderolabs/talos/releases?per_page=5" | jq -r '.[].tag_name')
+    latestVersions=$(curl -s "https://api.github.com/repos/siderolabs/talos/releases?per_page=15" | jq -r '.[].tag_name')
     echo -e "\033[34mVilken version vill du installera?\033[0m"
     selectedVersion=$(fzfSelect "$latestVersions")
 
@@ -50,8 +50,15 @@ main_talos_upgrade() {
     echo -e "\033[34mVilka noder vill du uppdatera?\033[0m"
     selectedNodes=$(fzfSelect "$nodes")
     selectedNodesString=$(echo "$selectedNodes" | tr ' ' ',')
-    schematicID=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .talos-id" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1)
-    echo "$schematicID"
+    schematicID=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"talos-id\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
+
+    if [ -z "$schematicID" ]; then
+        echo "❌ Fel: Kunde inte hämta talos-id för nod $selectedNodesString"
+        echo "   Kontrollera att noden finns i nodes.yaml"
+        return 1
+    fi
+
+    echo "🔧 Uppgraderar nod $selectedNodesString med talos-id: $schematicID"
     echo "talosctl upgrade --image factory.talos.dev/installer/$schematicID:$selectedVersion -n $selectedNodesString"
     talosctl upgrade --image "factory.talos.dev/installer/$schematicID:$selectedVersion" -n "$selectedNodesString"
 }
@@ -90,21 +97,34 @@ main_talos_update_config() {
         echo "✅ Certifikatet fungerar"
     fi
 
-    # Get Talos version from controlplane
-    echo "Hämtar Talos-version från klustret..."
-    talos_version=$(talosctl version -n "$controlplane_ip" --short 2>/dev/null | grep "Tag:" | awk '{print $2}' | sed 's/^v//' || echo "")
-    if [ -n "$talos_version" ]; then
-        echo "Hittade Talos version: v$talos_version"
-        talos_version_flag="--talos-version v$talos_version"
-        # Kubernetes 1.30.x är kompatibel med Talos 1.11.x
-        k8s_version="v1.30.0"
-        echo "Använder Kubernetes version: $k8s_version"
-        k8s_version_flag="--kubernetes-version $k8s_version"
-    else
-        echo "Kunde inte hämta Talos-version, använder senaste"
-        talos_version_flag=""
-        k8s_version_flag=""
-    fi
+    # # Get Talos version from controlplane
+    # echo "Hämtar Talos-version från klustret..."
+    # talos_version=$(talosctl version -n "$controlplane_ip" --short 2>/dev/null | grep "Tag:" | awk '{print $2}' | sed 's/^v//' || echo "")
+    # if [ -n "$talos_version" ]; then
+    #     echo "Hittade Talos version: v$talos_version"
+    #     talos_version_flag="--talos-version v$talos_version"
+    # else
+    #     echo "Kunde inte hämta Talos-version, använder senaste"
+    #     talos_version_flag=""
+    # fi
+    #
+    # # Hämta Kubernetes-version från det befintliga klustret
+    # if kubectl get nodes >/dev/null 2>&1; then
+    #     current_k8s_version=$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')
+    #     k8s_version="v$current_k8s_version"
+    #     echo "Hämtar Kubernetes-version från klustret: $k8s_version"
+    # else
+    #     echo "Kan inte nå klustret, vilken Kubernetes-version vill du använda?"
+    #     echo "Exempel: v1.30.0, v1.31.0, v1.32.0"
+    #     read -r k8s_version
+    # fi
+    #
+    # # Lägg till 'v' om det inte finns
+    # if [[ ! "$k8s_version" =~ ^v ]]; then
+    #     k8s_version="v$k8s_version"
+    # fi
+    #
+    # k8s_version_flag="--kubernetes-version $k8s_version"
 
     # Get list of node names to process
     if [ -z "$nodnamn" ]; then
@@ -157,17 +177,7 @@ main_talos_update_config() {
 
         output_types="controlplane,worker,talosconfig"
 
-        base_cmd="talosctl gen config $cluster_name $endpoint --output-types=$output_types --with-docs=false --with-examples=false --config-patch-control-plane=@patches/controlplane.yaml --config-patch-worker=@patches/worker.yaml -o $config_dir --with-secrets=secrets.yaml --force --config-patch=@patches/all.yaml $talos_version_flag $k8s_version_flag"
-
-        if [ "$role" = "worker" ]; then
-            disk_patch="patches/disks/$node_name.yaml"
-            if [ -f "$disk_patch" ] && [ -s "$disk_patch" ]; then
-                # Check if file has actual content (not just comments)
-                if grep -v '^#' "$disk_patch" | grep -v '^[[:space:]]*$' | grep -q .; then
-                    base_cmd="$base_cmd --config-patch-worker=@$disk_patch"
-                fi
-            fi
-        fi
+        base_cmd="talosctl gen config $cluster_name $endpoint --output-types=$output_types --with-docs=false --with-examples=false --config-patch-control-plane=@patches/controlplane.yaml -o $config_dir --with-secrets=secrets.yaml --force --config-patch=@patches/all.yaml"
 
         full_cmd="$base_cmd $nodePatches"
 
@@ -182,6 +192,29 @@ main_talos_update_config() {
         if [ ! -f "$config_file" ]; then
             echo "FEL: Konfigurationsfilen $config_file skapades INTE!"
             continue
+        fi
+
+        # Ta bort hostname från config så vi kan sätta det efter apply
+        # Använd yq för att ta bort HostnameConfig dokumentet säkert
+        if command -v yq &> /dev/null; then
+            yq 'select(.kind != "HostnameConfig")' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+        fi
+
+        # Kontrollera om noden har konfigurerade patches i nodes.yaml
+        node_patches_list=$(yq ".nodes[] | select(.name == \"$node_name\") | .patches[]" nodes.yaml 2>/dev/null)
+        
+        if [ -n "$node_patches_list" ]; then
+            node_patch="patches/nodes/$node_name.yaml"
+            if [ -f "$node_patch" ] && [ -s "$node_patch" ]; then
+              if grep -v '^#' "$node_patch" | grep -v '^[[:space:]]*$' | grep -q .; then
+                echo "Applicerar node-specifik patch: $node_patch"
+                talosctl machineconfig patch "$config_file" --patch "@$node_patch" -o "$config_file.tmp"
+                if [ -f "$config_file.tmp" ]; then
+                  mv "$config_file.tmp" "$config_file"
+                  echo "✅ Node-patch applicerad"
+                fi
+              fi
+            fi
         fi
 
         # Kontrollera nodens verkliga status genom att försöka ansluta
@@ -201,10 +234,15 @@ main_talos_update_config() {
             echo "ℹ️  Kan inte avgöra nodens status, försöker med maintenance mode..."
             node_in_maintenance=true
         fi
-        
+#   talosctl get machinestatus -n 10.10.10.29 --insecure
+# NODE   NAMESPACE   TYPE            ID        VERSION   STAGE         READY
+#        runtime     MachineStatus   machine   5         maintenance   true
+#
         if [ "$node_in_maintenance" = "true" ]; then
             echo "📝 Applicerar konfiguration i maintenance mode..."
+            talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file"
             if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file"; then
+
                 echo "✅ Konfiguration applicerad!"
                 echo "⚠️  Noden måste startas om och boota upp helt innan hostname kan sättas."
                 echo "   Vänta 2-3 minuter och kör sedan: ./simon talos update config $node_name"
@@ -215,14 +253,8 @@ main_talos_update_config() {
             fi
         elif [ "$node_initialized" = "true" ]; then
             echo "Noden $node_ip är redan initialiserad, applicerar konfigurationen."
-            if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file"; then
-                echo "✅ Konfiguration applicerad"
-                echo "Namnger noden $node_ip till $node_name"
-                if talosctl --talosconfig talosconfig patch mc -p "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}" -n "$node_ip"; then
-                    echo "✅ Hostname satt till $node_name"
-                else
-                    echo "⚠️  Kunde inte sätta hostname"
-                fi
+            if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file" --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}"; then
+                echo "✅ Konfiguration applicerad med hostname $node_name"
             else
                 echo "❌ Kunde inte applicera konfiguration"
             fi
@@ -238,7 +270,7 @@ main_talos_update_config() {
     fi
     echo "$message"
     rm -f secrets.yaml
-    rm -rf "$config_dir"
+    # rm -rf "$config_dir"
 }
 
 main_talos_health() {
