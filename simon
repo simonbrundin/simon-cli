@@ -123,6 +123,7 @@ main() {
                     "longhorn test") main_kubernetes_longhorn_test ;;
                     "install argocd") main_kubernetes_install_argocd ;;
                     "health") main_kubernetes_health ;;
+                    "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
                 esac
                 ;;
@@ -587,6 +588,7 @@ else
                     "longhorn test") main_kubernetes_longhorn_test ;;
                     "install argocd") main_kubernetes_install_argocd ;;
                     "health") main_kubernetes_health ;;
+                    "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
                 esac
                 ;;

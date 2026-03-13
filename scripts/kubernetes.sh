@@ -503,8 +503,89 @@ main_kubernetes_health() {
         return 1
     fi
 
+    echo -e "\n\033[34m9. Versioner...\033[0m"
+    main_kubernetes_versions
+
     main_kubernetes_iscsi_health
 
     echo -e "\n\033[32m✅ Alla health checks klar!\033[0m"
     return 0
+}
+
+main_kubernetes_versions() {
+    local green=$'\033[32m'
+    local yellow=$'\033[33m'
+    local red=$'\033[31m'
+    local reset=$'\033[0m'
+
+    echo -e "\n\033[34mKubernetes versioner...\033[0m"
+
+    local kubectl_versions
+    kubectl_versions=$(kubectl version -o json 2>&1)
+    local kubectl_exit=$?
+
+    if [ $kubectl_exit -ne 0 ]; then
+        echo -e "${red}❌ Kunde inte hämta kubectl version: $kubectl_versions${reset}"
+    else
+        local client_version server_version
+        client_version=$(echo "$kubectl_versions" | jq -r '.clientVersion.gitVersion' 2>/dev/null)
+        server_version=$(echo "$kubectl_versions" | jq -r '.serverVersion.gitVersion' 2>/dev/null)
+
+        local latest_k8s
+        latest_k8s=$(curl -sSL "https://dl.k8s.io/release/stable-1.txt" 2>/dev/null | tr -d '\r')
+
+        echo "  Client: $client_version"
+
+        if [ "$server_version" = "null" ] || [ -z "$server_version" ]; then
+            echo -e "  Server: ${red}Kunde inte hämta${reset}"
+        else
+            echo -n "  Server: $server_version"
+            if [ -n "$latest_k8s" ]; then
+                local normalized_server="${server_version#v}"
+                local normalized_latest="${latest_k8s#v}"
+                if [ "$normalized_server" = "$normalized_latest" ]; then
+                    echo -e " ${green}✅ (senaste: $latest_k8s)${reset}"
+                else
+                    echo -e " ${yellow}⚠️  (senaste: $latest_k8s)${reset}"
+                fi
+            else
+                echo ""
+            fi
+        fi
+    fi
+
+    echo -e "\n\033[34mTalos versioner...\033[0m"
+
+    local talosctl_output
+    talosctl_output=$(talosctl version --nodes 10.10.10.11 2>&1)
+    local talos_exit=$?
+
+    if [ $talos_exit -ne 0 ]; then
+        echo -e "${red}❌ Kunde inte hämta talosctl version: $talosctl_output${reset}"
+    else
+        local talos_client_version talos_server_version
+        talos_client_version=$(echo "$talosctl_output" | awk '/^Client:/{found=1} found && /Tag:/{print $2; exit}' | tr -d '\r')
+        talos_server_version=$(echo "$talosctl_output" | awk '/^Server:/{found=1} found && /Tag:/{print $2; exit}' | tr -d '\r')
+
+        local latest_talos
+        latest_talos=$(curl -sSL "https://api.github.com/repos/siderolabs/talos/releases/latest" 2>/dev/null | jq -r '.tag_name' 2>/dev/null | sed 's/^v//')
+
+        echo "  Client: $talos_client_version"
+
+        if [ -z "$talos_server_version" ] || [ "$talos_server_version" = "null" ]; then
+            echo -e "  Server: ${red}Kunde inte hämta${reset}"
+        else
+            echo -n "  Server: $talos_server_version"
+            if [ -n "$latest_talos" ]; then
+                local normalized_talos_server="${talos_server_version#v}"
+                if [ "$normalized_talos_server" = "$latest_talos" ]; then
+                    echo -e " ${green}✅ (senaste: $latest_talos)${reset}"
+                else
+                    echo -e " ${yellow}⚠️  (senaste: $latest_talos)${reset}"
+                fi
+            else
+                echo ""
+            fi
+        fi
+    fi
 }
