@@ -137,6 +137,7 @@ main() {
                     "health") main_talos_health ;;
                     "update kubeconfig") main_talos_update_kubeconfig ;;
                     "reboot all") main_talos_reboot_all ;;
+                    "systemdisks") main_talos_systemdisks ;;
                     *) echo "Unknown talos command: $arg" ;;
                 esac
                 ;;
@@ -470,6 +471,7 @@ show_help() {
     echo "  talos health"
     echo "  talos update kubeconfig"
     echo "  talos reboot all"
+    echo "  talos systemdisks"
     echo ""
     echo "Setup commands:"
     echo "  bootstrap mac"
@@ -602,6 +604,7 @@ else
                     "health") main_talos_health ;;
                     "update kubeconfig") main_talos_update_kubeconfig ;;
                     "reboot all") main_talos_reboot_all ;;
+                    "systemdisks") main_talos_systemdisks ;;
                     *) echo "Unknown talos command: $arg" ;;
                 esac
                 ;;

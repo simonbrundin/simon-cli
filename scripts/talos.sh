@@ -286,6 +286,23 @@ main_talos_update_kubeconfig() {
     talosctl kubeconfig /home/simon/repos/infrastructure/talos/kubeconfig
 }
 
+main_talos_systemdisks() {
+    all_nodes=$(yq '.nodes[] | select(.initialized == true)' /home/simon/repos/infrastructure/talos/nodes.yaml)
+    
+    for node in $(yq '.nodes[] | select(.initialized == true) | .name' /home/simon/repos/infrastructure/talos/nodes.yaml); do
+        node=$(echo "$node" | tr -d '"')
+        node_ip=$(yq ".nodes[] | select(.name == \"$node\") | .ip" /home/simon/repos/infrastructure/talos/nodes.yaml | tr -d '"')
+        
+        if timeout 2 talosctl -n "$node_ip" version >/dev/null 2>&1; then
+            echo -e "\033[34m=== $node ===\033[0m"
+            talosctl get systemdisks -n "$node_ip"
+            echo ""
+        else
+            echo "⚠️  Nod $node ($node_ip) är inte tillgänglig, hoppar över..."
+        fi
+    done
+}
+
 main_talos_reboot_all() {
     controlplanes=$(yq '.nodes[] | select(.role == "controlplane") | .ip' /home/simon/repos/infrastructure/talos/nodes.yaml | tr '\n' ',')
     workers=$(yq '.nodes[] | select(.role == "worker") | .ip' /home/simon/repos/infrastructure/talos/nodes.yaml | tr '\n' ',')
