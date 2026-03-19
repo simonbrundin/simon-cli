@@ -345,6 +345,8 @@ main_kubernetes_health() {
         return 1
     fi
 
+    local continue_after_argocd=1
+
     echo -e "\n\033[34m1. PING NODER...\033[0m"
 
     local controlplane_ips worker_ips
@@ -430,7 +432,19 @@ main_kubernetes_health() {
     done < <(kubectl get pods -n argocd --no-headers 2>/dev/null)
     if [ $has_error -eq 1 ]; then
         echo -e "\n\033[31m❌ Det finns poddar som inte kör i argocd\033[0m"
+        continue_after_argocd=0
+    fi
+
+    echo -e "\n\033[34m6.5. Pending CSR...\033[0m"
+    local pending_csrs
+    pending_csrs=$(kubectl get csr --no-headers 2>/dev/null | grep "Pending" | wc -l)
+
+    if [ "$pending_csrs" -gt 0 ]; then
+        echo -e "\033[31m❌ Det finns $pending_csrs pending CSR som behöver godkännas:\033[0m"
+        kubectl get csr 2>/dev/null | grep "Pending"
         return 1
+    else
+        echo -e "\033[32m  ✓ Inga pending CSR\033[0m"
     fi
 
     echo -e "\n\033[34m7. Longhorn status...\033[0m"
@@ -458,6 +472,12 @@ main_kubernetes_health() {
     echo "Nodes:"
     local unschedulable_disks=0
     local schedulable_disks=0
+
+    if ! kubectl get nodes.longhorn.io -n longhorn-system >/dev/null 2>&1; then
+        echo -e "\n\033[31m❌ Kan inte hämta Longhorn-nodes\033[0m"
+        return 1
+    fi
+
     for node in $(kubectl get nodes.longhorn.io -n longhorn-system -o jsonpath='{.items[*].metadata.name}'); do
         local node_schedulable=0
         local node_total=0
@@ -487,7 +507,36 @@ main_kubernetes_health() {
         return 1
     fi
 
-    echo -e "\n\033[34m8. Vault unsealed status...\033[0m"
+    echo -e "\n\033[34m8. Vault fullständig health...\033[0m"
+
+    local green=$'\033[32m'
+    local red=$'\033[31m'
+    local yellow=$'\033[33m'
+    local reset=$'\033[0m'
+
+    echo -e "\n\033[33m  Poddar i vault namespace...\033[0m"
+    local vault_pods_error=0
+    while IFS= read -r line; do
+        local ready_status
+        ready_status=$(echo "$line" | awk '{print $2}')
+        local ready running
+        ready=$(echo "$ready_status" | cut -d'/' -f1)
+        running=$(echo "$ready_status" | cut -d'/' -f2)
+        
+        if [[ "$line" == *"Running"* ]] && [ "$ready" -eq "$running" ] 2>/dev/null; then
+            echo -e "  ${green}$line${reset}"
+        else
+            echo -e "  ${red}$line${reset}"
+            vault_pods_error=1
+        fi
+    done < <(kubectl get pods -n vault --no-headers 2>/dev/null)
+
+    if [ $vault_pods_error -eq 1 ]; then
+        echo -e "\n\033[31m❌ Det finns problem med Vault-poddar\033[0m"
+        return 1
+    fi
+
+    echo -e "\n\033[33m  Unsealed status...\033[0m"
     local vault_pod
     vault_pod=$(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -z "$vault_pod" ]; then
@@ -500,6 +549,34 @@ main_kubernetes_health() {
         echo -e "\033[32m  ✓ Vault is unsealed\033[0m"
     else
         echo -e "\033[31m❌ Vault is NOT unsealed (status: $vault_status)\033[0m"
+        return 1
+    fi
+
+    echo -e "\n\033[33m  Health endpoint...\033[0m"
+    local vault_health
+    vault_health=$(kubectl exec -n vault "$vault_pod" -- vault read sys/health -format=json 2>/dev/null)
+    if [ -n "$vault_health" ]; then
+        local vault_initialized vault_sealed vault_standby
+        vault_initialized=$(echo "$vault_health" | jq -r '.data.initialized' 2>/dev/null)
+        vault_sealed=$(echo "$vault_health" | jq -r '.data.sealed' 2>/dev/null)
+        vault_standby=$(echo "$vault_health" | jq -r '.data.standby' 2>/dev/null)
+        echo -e "    Initialized: ${vault_initialized}"
+        echo -e "    Sealed: ${vault_sealed}"
+        echo -e "    Standby: ${vault_standby}"
+    else
+        echo -e "\033[31m❌ Kunde inte läsa Vault health\033[0m"
+    fi
+
+    echo -e "\n\033[33m  Test läsa secret...\033[0m"
+    local secret_test
+    secret_test=$(kubectl exec -n vault "$vault_pod" -- vault kv get secret/data/test 2>/dev/null)
+    if [ -n "$secret_test" ]; then
+        echo -e "\033[32m  ✓ Kan läsa secrets\033[0m"
+    else
+        echo -e "\033[33m  ⚠ Kan inte läsa test-secret (kan vara normalt)\033[0m"
+    fi
+
+    if [ "$continue_after_argocd" -eq 0 ]; then
         return 1
     fi
 

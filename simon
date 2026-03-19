@@ -122,7 +122,6 @@ main() {
                     "remove selected") main_kubernetes_remove_selected ;;
                     "longhorn test") main_kubernetes_longhorn_test ;;
                     "install argocd") main_kubernetes_install_argocd ;;
-                    "health") main_kubernetes_health ;;
                     "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
                 esac
@@ -464,6 +463,9 @@ show_help() {
     echo "  kubernetes longhorn test"
     echo "  kubernetes install argocd"
     echo ""
+    echo "Cluster commands:"
+    echo "  cluster health"
+    echo ""
     echo "Talos commands:"
     echo "  talos dashboard"
     echo "  talos upgrade"
@@ -589,7 +591,6 @@ else
                     "remove selected") main_kubernetes_remove_selected ;;
                     "longhorn test") main_kubernetes_longhorn_test ;;
                     "install argocd") main_kubernetes_install_argocd ;;
-                    "health") main_kubernetes_health ;;
                     "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
                 esac
@@ -689,6 +690,12 @@ else
                 case "$2" in
                     agentos) main_update_agentos "$3" ;;
                     *) echo "Unknown update command: $2" ;;
+                esac
+                ;;
+            cluster)
+                case "$2" in
+                    health) main_kubernetes_health ;;
+                    *) echo "Unknown cluster command: $2" ;;
                 esac
                 ;;
             *) echo "Unknown command: $1" ;;
