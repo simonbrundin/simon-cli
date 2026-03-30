@@ -240,12 +240,11 @@ main_talos_update_config() {
 #
         if [ "$node_in_maintenance" = "true" ]; then
             echo "📝 Applicerar konfiguration i maintenance mode..."
-            talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file"
-            if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file"; then
+            if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file" --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}"; then
 
-                echo "✅ Konfiguration applicerad!"
-                echo "⚠️  Noden måste startas om och boota upp helt innan hostname kan sättas."
-                echo "   Vänta 2-3 minuter och kör sedan: ./simon talos update config $node_name"
+                echo "✅ Konfiguration applicerad med hostname $node_name!"
+                echo "ℹ️  Noden startas om och hostname kommer att sättas."
+                yq -i ".nodes[] |= select(.name == \"$node_name\").initialized = true" nodes.yaml
                 # Uppdatera nodes.yaml
                 yq -i ".nodes[] |= select(.name == \"$node_name\").initialized = true" nodes.yaml
             else
@@ -253,8 +252,12 @@ main_talos_update_config() {
             fi
         elif [ "$node_initialized" = "true" ]; then
             echo "Noden $node_ip är redan initialiserad, applicerar konfigurationen."
+            
+            # För redan initierade noder, applicera endast hostname för att undvika problem
+            # Machine config-ändringar (som diskar/UserVolumes) kräver omstart
             if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file" --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}"; then
                 echo "✅ Konfiguration applicerad med hostname $node_name"
+                echo "ℹ️  Obs: För att uppdatera diskkonfiguration (UserVolumes), krävs omstart av noden"
             else
                 echo "❌ Kunde inte applicera konfiguration"
             fi

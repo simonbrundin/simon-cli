@@ -159,15 +159,15 @@ main_kubernetes_remove_finalizers() {
     # Steg 2: Hämta resurstyper
     resource_types=$(kubectl api-resources --namespaced=true --verbs=list -o name)
 
-    components=""
+    components=()
     for type in $resource_types; do
         items=$(kubectl get "$type" -n "$selected_namespace" -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null)
         for item in $items; do
-            components="$components $type/$item"
+            components+=("$type/$item")
         done
     done
 
-    selected_components=$(fzfSelect "$components")
+    selected_components=$(fzfSelect "${components[@]}")
 
     if [ -z "$selected_components" ]; then
         echo "❌ Inga resurser valda. Avbryter."
@@ -217,15 +217,15 @@ main_kubernetes_remove_selected() {
 
     resource_types=$(kubectl api-resources --namespaced=true --verbs=list -o name)
 
-    components=""
+    components=()
     for type in $resource_types; do
         items=$(kubectl get "$type" -n "$selected_namespace" -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null)
         for item in $items; do
-            components="$components $type/$item"
+            components+=("$type/$item")
         done
     done
 
-    selected_components=$(fzfSelect "$components")
+    selected_components=$(fzfSelect "${components[@]}")
 
     if [ -z "$selected_components" ]; then
         echo "❌ Inga resurser valda. Avbryter."
