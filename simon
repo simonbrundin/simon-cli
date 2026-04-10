@@ -17,6 +17,7 @@ source "$SCRIPT_DIR/scripts/ceph.sh"
 source "$SCRIPT_DIR/scripts/kubernetes.sh"
 source "$SCRIPT_DIR/scripts/update.sh"
 source "$SCRIPT_DIR/scripts/unifi.sh"
+source "$SCRIPT_DIR/scripts/photos.sh"
 
 # Source functions
 source "$SCRIPT_DIR/functions.sh"
@@ -217,10 +218,17 @@ main() {
                     *) echo "Unknown ceph command: $2" ;;
                 esac
                 ;;
+            photos) main_photos ;;
             update)
                 case "$2" in
                     agentos) main_update_agentos "$3" ;;
                     *) echo "Unknown update command: $2" ;;
+                esac
+                ;;
+            cluster)
+                case "$2" in
+                    health) main_kubernetes_health ;;
+                    *) echo "Unknown cluster command: $2" ;;
                 esac
                 ;;
             *) echo "Unknown command: $1" ;;
@@ -520,6 +528,9 @@ echo "AI commands:"
     echo "  ceph cluster"
     echo "  ceph delete"
     echo ""
+    echo "  photos"
+    echo "  import photos"
+    echo ""
     echo "Update commands:"
     echo "  update agentos [--no-projects]  Update Agent OS and optionally projects"
 }
@@ -661,6 +672,12 @@ else
                     *) echo "Unknown login command: $2" ;;
                 esac
                 ;;
+            import)
+                case "$2" in
+                    photos) main_photos ;;
+                    *) echo "Unknown import command: $2" ;;
+                esac
+                ;;
             test) main_test ;;
             commit) main_commit ;;
             clone) shift; main_clone "$@" ;;
@@ -686,6 +703,7 @@ else
                     *) echo "Unknown ceph command: $2" ;;
                 esac
                 ;;
+            photos) main_photos ;;
             update)
                 case "$2" in
                     agentos) main_update_agentos "$3" ;;
