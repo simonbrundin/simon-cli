@@ -18,6 +18,7 @@ source "$SCRIPT_DIR/scripts/kubernetes.sh"
 source "$SCRIPT_DIR/scripts/update.sh"
 source "$SCRIPT_DIR/scripts/unifi.sh"
 source "$SCRIPT_DIR/scripts/photos.sh"
+source "$SCRIPT_DIR/scripts/network.sh"
 
 # Source functions
 source "$SCRIPT_DIR/functions.sh"
@@ -86,6 +87,7 @@ main() {
             flash) main_flash ;;
             xfs) main_xfs ;;
             speed) main_speed ;;
+            whois) main_whois ;;
             reboot) main_reboot ;;
             edit)
                 case "$2" in
@@ -231,6 +233,8 @@ main() {
                     *) echo "Unknown cluster command: $2" ;;
                 esac
                 ;;
+            trip) shift; main_trip "$@" ;;
+            traceroute) shift; main_trip "$@" ;;
             *) echo "Unknown command: $1" ;;
         esac
 }
@@ -419,6 +423,10 @@ main_speed() {
     speedtest
 }
 
+main_whois() {
+    quien
+}
+
 main_edit_cron() {
     crontab -e
 }
@@ -565,6 +573,7 @@ else
             flash) main_flash ;;
             xfs) main_xfs ;;
             speed) main_speed ;;
+            whois) main_whois ;;
             reboot) main_reboot ;;
             edit)
                 case "$2" in
@@ -716,6 +725,8 @@ else
                     *) echo "Unknown cluster command: $2" ;;
                 esac
                 ;;
+            trip) shift; main_trip "$@" ;;
+            traceroute) shift; main_trip "$@" ;;
             *) echo "Unknown command: $1" ;;
         esac
 fi
