@@ -175,6 +175,41 @@ main_talos_update_config() {
             echo "Patchar: $nodePatches"
         fi
 
+        # Kontrollera om patch-filen innehåller diskSelector
+        node_patch_file="patches/nodes/$node_name.yaml"
+        needs_disk_reinstall=false
+        disk_selector_matches=false
+        
+        if [ -f "$node_patch_file" ]; then
+            if grep -q "diskSelector:" "$node_patch_file" 2>/dev/null; then
+                patch_disk_serial=$(grep "serial:" "$node_patch_file" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+                
+                if [ -n "$patch_disk_serial" ]; then
+                    # Hämta nodens config och kolla disk/diskSelector
+                    current_machine_config=$(talosctl --talosconfig talosconfig get mc v1alpha1 -n "$node_ip" -o yaml 2>/dev/null)
+                    get_result=$?
+                    config_lines=$(echo "$current_machine_config" | wc -l)
+                    
+                    # Om get mc lyckades OCH returnerar data - kolla disk:
+                    if [ $get_result -eq 0 ] && [ "$config_lines" -gt 2 ]; then
+                        # Om disk: INTE finns i config, är diskSelector aktiv (ingen upgrade behövs)
+                        if ! echo "$current_machine_config" | grep -q "^[[:space:]]*disk:"; then
+                            needs_disk_reinstall=false
+                            disk_selector_matches=true
+                            echo "ℹ️  diskSelector aktiv (ingen disk: i config) - hoppar över upgrade"
+                        else
+                            needs_disk_reinstall=true
+                            echo "ℹ️  disk: finns i config - kör upgrade"
+                        fi
+                    else
+                        # Noden nere eller fel - kör upgrade för säkerhets skull
+                        needs_disk_reinstall=true
+                        echo "ℹ️  Kan inte kontrollera nodens config - kör upgrade för säkerhets skull"
+                    fi
+                fi
+            fi
+        fi
+
         output_types="controlplane,worker,talosconfig"
 
         base_cmd="talosctl gen config $cluster_name $endpoint --output-types=$output_types --with-docs=false --with-examples=false --config-patch-control-plane=@patches/controlplane.yaml -o $config_dir --with-secrets=secrets.yaml --force --config-patch=@patches/all.yaml"
@@ -217,22 +252,53 @@ main_talos_update_config() {
             fi
         fi
 
-        # Kontrollera nodens verkliga status genom att försöka ansluta
+        # Om diskSelector finns i patch, ta bort 'disk' för att undvika konflikt
+        # Hoppa över om disk_selector_matches redan är true ELLER diskSelector finns i config-filen
+        if [ "$needs_disk_reinstall" = "true" ] && [ "$disk_selector_matches" != "true" ]; then
+            if command -v yq &> /dev/null; then
+                # Kolla BÅDE disk OCH diskSelector
+                has_disk=$(yq '.machine.install.disk' "$config_file" 2>/dev/null | grep -q 'null' && echo "no" || echo "yes")
+                has_disk_selector=$(yq '.machine.install.diskSelector' "$config_file" 2>/dev/null | grep -q 'null' && echo "no" || echo "yes")
+                
+                if [ "$has_disk" = "no" ] && [ "$has_disk_selector" = "no" ]; then
+                    echo "ℹ️  Varken disk eller diskSelector - lägger till diskSelector från patch"
+                elif [ "$has_disk" = "no" ] && [ "$has_disk_selector" = "yes" ]; then
+                    echo "ℹ️  diskSelector finns redan i config - behåller den"
+                elif [ "$has_disk" = "yes" ] && [ "$has_disk_selector" = "yes" ]; then
+                    echo "🧹 Tar bort disk (diskSelector finns också i config)..."
+                    yq 'del(.machine.install.disk)' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+                    echo "✅ disk borttagen, diskSelector behålls"
+                else
+                    echo "🧹 Tar bort disk från config..."
+                    yq 'del(.machine.install.disk)' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+                    echo "✅ disk borttagen"
+                fi
+            fi
+        fi
+
+        # Kontrollera nodens verkliga status med talosctl get machinestatus
         echo "Kontrollerar nodens status..."
         node_in_maintenance=false
         node_initialized=false
         
-        # Testa om noden är i maintenance mode (svarar på --insecure)
-        if talosctl apply-config --insecure --nodes "$node_ip" --dry-run --file "$config_file" >/dev/null 2>&1; then
+        # Använd talosctl get machinestatus för att avgöra nodens tillstånd
+        machine_status=$(talosctl --talosconfig talosconfig get machinestatus -n "$node_ip" 2>&1)
+        
+        if echo "$machine_status" | grep -q "maintenance"; then
             node_in_maintenance=true
             echo "ℹ️  Noden är i maintenance mode (ej initialiserad)"
-        elif talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --dry-run --file "$config_file" >/dev/null 2>&1; then
+        elif echo "$machine_status" | grep -q "running"; then
             node_initialized=true
             echo "ℹ️  Noden är initialiserad och medlem i klustret"
         else
-            # Kan inte avgöra, försök med maintenance mode först
-            echo "ℹ️  Kan inte avgöra nodens status, försöker med maintenance mode..."
-            node_in_maintenance=true
+            # Fallback till gammal metod
+            if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --dry-run --file "$config_file" >/dev/null 2>&1; then
+                node_initialized=true
+                echo "ℹ️  Noden är initialiserad och medlem i klustret"
+            else
+                echo "ℹ️  Kan inte avgöra nodens status, försöker med initierad..."
+                node_initialized=true
+            fi
         fi
 #   talosctl get machinestatus -n 10.10.10.29 --insecure
 # NODE   NAMESPACE   TYPE            ID        VERSION   STAGE         READY
@@ -253,13 +319,81 @@ main_talos_update_config() {
         elif [ "$node_initialized" = "true" ]; then
             echo "Noden $node_ip är redan initialiserad, applicerar konfigurationen."
             
-            # För redan initierade noder, applicera endast hostname för att undvika problem
-            # Machine config-ändringar (som diskar/UserVolumes) kräver omstart
-            if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file" --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}"; then
-                echo "✅ Konfiguration applicerad med hostname $node_name"
-                echo "ℹ️  Obs: För att uppdatera diskkonfiguration (UserVolumes), krävs omstart av noden"
+            # Om diskSelector finns i patch, använd patch machineconfig för att behålla diskSelector
+            # HOPPA ÖVER HELT om disk_selector_matches redan är true
+            if [ "$disk_selector_matches" = "true" ]; then
+                echo "ℹ️  diskSelector aktiv - endast applicera konfig utan upgrade"
+                talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file" --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}" --mode no-reboot
+                echo "✅ Konfiguration applicerad"
+            elif [ "$needs_disk_reinstall" = "true" ]; then
+                echo "⚠️  Maskininstalldisk har ändrats i konfigurationen (diskSelector)"
+                echo "   Detta KRÄVER omstart av noden för att diskSelector ska användas."
+                echo ""
+                
+                # Skapa en enkel JSON patch som sätter disk till null och lägger till diskSelector
+                local disk_serial
+                disk_serial=$(grep "serial:" "patches/nodes/$node_name.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+                
+                if [ -n "$disk_serial" ]; then
+                    echo "📝 Patchar machineconfig med diskSelector (serial: $disk_serial)..."
+                    
+                    # Först: lägg till diskSelector
+                    if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                        --patch '[{"op": "add", "path": "/machine/install/diskSelector/serial", "value": "'"$disk_serial"'"}]' \
+                        --mode no-reboot 2>/dev/null; then
+                        echo "✅ diskSelector tillagd"
+                    else
+                        # Om det misslyckas, försök med replace (om diskSelector redan finns)
+                        talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                            --patch '[{"op": "replace", "path": "/machine/install/diskSelector/serial", "value": "'"$disk_serial"'"}]' \
+                            --mode no-reboot 2>/dev/null || true
+                    fi
+                    
+                    # Sen: ta bort disk (om den finns)
+                    talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                        --patch '[{"op": "remove", "path": "/machine/install/disk"}]' \
+                        --mode no-reboot 2>/dev/null || true
+                    
+                    # Säkerställ att hostname appliceras FÖRE upgrade
+                    echo "📝 Applicerar hostname: $node_name..."
+                    talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" \
+                        --file "$config_file" \
+                        --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}" \
+                        --mode no-reboot
+                    
+                    # Hämta talos-id (schematic) för att köra upgrade med rätt image
+                    schematicID=$(yq ".nodes[] | select(.name == \"$node_name\") | .\"talos-id\"" nodes.yaml 2>/dev/null | tr -d '"')
+                    
+                    if [ -n "$schematicID" ] && [ "$schematicID" != "null" ]; then
+                        echo "📦 Kör upgrade med schematic $schematicID (installerar extensions + uppdaterar diskSelector)..."
+                        talosctl --talosconfig talosconfig upgrade \
+                            --image "factory.talos.dev/installer/$schematicID:v1.12.5" \
+                            --nodes "$node_ip" \
+                            --preserve 2>/dev/null || \
+                        talosctl --talosconfig talosconfig upgrade \
+                            --image "ghcr.io/siderolabs/installer:v1.12.5" \
+                            --nodes "$node_ip" \
+                            --preserve 2>/dev/null || \
+                        talosctl --talosconfig talosconfig reboot -n "$node_ip" 2>/dev/null
+                        
+                        echo "✅ Upgrade/reboot påbörjad för $node_name"
+                        echo "   Noden kommer att starta om med diskSelector och extensions aktiverade"
+                    else
+                        echo "⚠️  Kunde inte hitta talos-id, kör vanlig reboot..."
+                        talosctl --talosconfig talosconfig reboot -n "$node_ip" 2>/dev/null
+                        echo "✅ Noden $node_name kommer att starta om och använda diskSelector."
+                    fi
+                else
+                    echo "⚠️  Kunde inte hitta diskSelector serial i patch-filen"
+                fi
             else
-                echo "❌ Kunde inte applicera konfiguration"
+                # Vanlig uppdatering utan disk-ändring
+                if talosctl --talosconfig talosconfig apply-config --nodes "$node_ip" --file "$config_file" --config-patch "{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}"; then
+                    echo "✅ Konfiguration applicerad med hostname $node_name"
+                    echo "ℹ️  Obs: För att uppdatera diskkonfiguration (UserVolumes), krävs omstart av noden"
+                else
+                    echo "❌ Kunde inte applicera konfiguration"
+                fi
             fi
         fi
 

@@ -244,29 +244,227 @@ main_kubernetes_remove_selected() {
 }
 
 main_kubernetes_longhorn_test() {
-    nodes=$(kubectl get nodes -o json | jq -r '.items[].metadata.name')
-    selected_node=$(fzfSelect "$nodes")
+    local selected_node="$1"
+    
+    if [ -z "$selected_node" ]; then
+        nodes=$(kubectl get nodes -o json | jq -r '.items[].metadata.name')
+        selected_node=$(fzfSelect "$nodes")
+    fi
+    
+    if [ -z "$selected_node" ]; then
+        echo "Ingen node vald"
+        return 1
+    fi
+    
     echo -e "\033[34mVald node: \033[0m$selected_node\n"
 
-    echo -e "\033[34mInstallationsdisk:\033[0m"
-    install_disk=$(talosctl get machineconfig -n "$selected_node" -o yaml | yq '.spec.machine.install.disk')
-    if [ "$install_disk" = "/dev/mmcblk1" ]; then
-        echo -e "\033[32m$install_disk\033[0m"
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
+    if [ ! -f "$nodes_yaml" ]; then
+        echo -e "\033[31m❌ nodes.yaml not found: $nodes_yaml\033[0m"
+        return 1
+    fi
+
+    local ip
+    ip=$(yq -r ".nodes[] | select(.name == \"$selected_node\") | .ip" "$nodes_yaml")
+    if [ -z "$ip" ] || [ "$ip" == "null" ]; then
+        echo -e "\033[31m❌ IP not found for node: $selected_node\033[0m"
+        return 1
+    fi
+
+    echo -e "\033[34mNode IP: \033[0m$ip\n"
+
+    echo -e "\033[34mSystemdisk:\033[0m"
+    local install_disk install_pretty_size disk_selector_output
+    
+    # Läs diskSelector från patch-filen (konfigurerad)
+    local patch_file="$HOME/repos/infrastructure/talos/patches/nodes/$selected_node.yaml"
+    local ds_serial ds_model ds_size
+    if [ -f "$patch_file" ]; then
+        ds_serial=$(grep "serial:" "$patch_file" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+        ds_model=$(grep "model:" "$patch_file" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+        ds_size=$(grep "size:" "$patch_file" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+    fi
+    
+    # Hämta installerad disk via systemdisks
+    local sysdisk_line
+    sysdisk_line=$(talosctl get systemdisks -n "$ip" 2>/dev/null)
+    
+    if echo "$sysdisk_line" | grep -q "system-disk"; then
+        local sys_disk
+        sys_disk=$(echo "$sysdisk_line" | grep "system-disk" | awk '{print $NF}')
+        
+        if [ -n "$sys_disk" ] && [ "$sys_disk" != "null" ]; then
+            # Hämta disk info (storlek, modell, serial)
+            local disk_info
+            disk_info=$(talosctl get disks -n "$ip" -o json 2>/dev/null | jq -rs ".[] | select(.metadata.id == \"$sys_disk\") | .spec.pretty_size + \" \" + (.spec.model // .spec.dev_path)")
+            
+            if [ -n "$disk_info" ]; then
+                local disk_serial
+                disk_serial=$(talosctl get disks -n "$ip" -o json 2>/dev/null | jq -rs ".[] | select(.metadata.id == \"$sys_disk\") | .spec.serial // \"\"")
+
+                if [ -n "$ds_serial" ]; then
+                    if [ -n "$disk_serial" ] && [ "$disk_serial" != "null" ]; then
+                        if [ "$ds_serial" = "$disk_serial" ]; then
+                            echo -e "  \033[32m✓ Konfiguerad serial: $ds_serial (matchar installerad)\033[0m"
+                            echo -e "  \033[32m  Installerad disk: $disk_info ($sys_disk)\033[0m"
+                        else
+                            echo -e "  \033[31m✗ Serial mismatch! Konfiguerad: $ds_serial, Installerad: $disk_serial\033[0m"
+                            echo "  Installerad disk: $disk_info ($sys_disk)"
+                        fi
+                    else
+                        echo -e "  \033[31m✗ Installerad disk saknar serial\033[0m"
+                        echo "  Installerad disk: $disk_info ($sys_disk)"
+                    fi
+                else
+                    echo -e "  \033[31m✗ Ingen serial konfigurerad i patch\033[0m"
+                    echo "  Installerad disk: $disk_info ($sys_disk)"
+                fi
+            else
+                echo "  Installerad disk: $sys_disk"
+            fi
+        fi
     else
-        echo -e "\033[31m$install_disk\033[0m"
+        # Fallback: försök hämta från machineconfig
+        local mc_output
+        mc_output=$(talosctl get machineconfig -n "$ip" -o json 2>/dev/null)
+        
+        if [ -n "$mc_output" ] && [ "$mc_output" != "null" ]; then
+            install_disk=$(echo "$mc_output" | jq -r '.spec' 2>/dev/null | yq '.machine.install.disk' 2>/dev/null | tr -d '"')
+            
+            if [ -n "$install_disk" ] && [ "$install_disk" != "null" ]; then
+                local disk_info
+                disk_info=$(talosctl get disks -n "$ip" -o json 2>/dev/null | jq -rs ".[] | select(.spec.dev_path == \"$install_disk\") | \"\(.spec.pretty_size) \(.spec.model // .spec.dev_path)\"")
+                echo "  Installerad disk: $disk_info"
+            else
+                echo "  (ingen disk konfigurerad)"
+            fi
+        else
+            echo "  (ingen disk konfigurerad)"
+        fi
     fi
 
     echo -e "\033[34mInstallerade tillägg:\033[0m"
-    extensions=$(talosctl get extensions -n "$selected_node" | awk 'NR>1 {print $1}')
-    echo "$extensions"
+    local ext_output
+    ext_output=$(talosctl get extensions -n "$ip" -o json 2>/dev/null)
+    
+    # Läs alltid från machineconfig för konfigurerade extensions
+    local mc_output configured_ext
+    mc_output=$(talosctl get machineconfig -n "$ip" -o json 2>/dev/null)
+    configured_ext=$(echo "$mc_output" | jq -r '.spec' 2>/dev/null | yq '.machine.install.extensions[].image' 2>/dev/null | tr -d '"')
 
-    echo -e "\033[34mDiskar och deras filsystem:\033[0m"
-    disks=$(talosctl get dv -n "$selected_node" | awk 'NR>1 && $1 ~ /^sd/ {print $1, $2}')
-    echo "$disks"
+    # Visa konfigurerade och installerade extensions
+    if [ -n "$configured_ext" ] && [ "$configured_ext" != "null" ]; then
+        echo "$configured_ext" | while read -r ext; do
+            [ -n "$ext" ] && echo "  - $ext (konfigurerad)"
+        done
+    fi
+    
+    # Visa även installerade extensions om dom finns och är olika
+    if [ -n "$ext_output" ] && [ "$ext_output" != "null" ] && echo "$ext_output" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+        local installed_ext
+        installed_ext=$(echo "$ext_output" | jq -sr '.[] | select(.spec != null) | .spec.metadata.name')
+        if [ -n "$installed_ext" ]; then
+            echo "$installed_ext" | while read -r ext; do
+                if ! echo "$configured_ext" | grep -q "$ext"; then
+                    echo "  - $ext (installerad)"
+                fi
+            done
+        fi
+    fi
 
-    echo -e "\033[34mMachineconfig disks:\033[0m"
-    machine_disks=$(talosctl get machineconfig -n "$selected_node" -o yaml | yq '.spec.machine.disks')
-    echo "$machine_disks"
+    # Kontrollera om util-linux-tools och schematic är installerade
+    local util_installed=false
+    local schematic_installed=false
+    
+    # Kolla i installerade extensions (ext_output)
+    if [ -n "$ext_output" ] && [ "$ext_output" != "null" ]; then
+        local installed_names
+        installed_names=$(echo "$ext_output" | jq -r '.. | if type == "object" and has("name") then .name else empty end' 2>/dev/null)
+        if echo "$installed_names" | grep -qx "util-linux-tools"; then
+            util_installed=true
+        fi
+        if echo "$installed_names" | grep -qx "schematic"; then
+            schematic_installed=true
+        fi
+    fi
+    
+    # Kolla även i konfigurerade extensions (configured_ext)
+    if [ -n "$configured_ext" ] && [ "$configured_ext" != "null" ]; then
+        if echo "$configured_ext" | sed 's|.*/||' | sed 's|:.*||' | grep -qx "util-linux-tools"; then
+            util_installed=true
+        fi
+        if echo "$configured_ext" | sed 's|.*/||' | sed 's|:.*||' | grep -qx "schematic"; then
+            schematic_installed=true
+        fi
+    fi
+
+    if [ "$util_installed" = true ] && [ "$schematic_installed" = true ]; then
+        echo -e "  \033[32m✓ util-linux-tools och schematic är installerade\033[0m"
+    else
+        echo -e "  \033[31m✗ util-linux-tools och schematic är inte installerade\033[0m"
+    fi
+    
+    if [ -z "$configured_ext" ] || [ "$configured_ext" = "null" ]; then
+        echo "  Inga tillägg konfigurerade"
+    fi
+
+    echo -e "\033[34mDiskar och partitioner:\033[0m"
+    local disk_output
+    disk_output=$(talosctl get dv -n "$ip" -o json 2>/dev/null)
+    if [ -n "$disk_output" ] && [ "$disk_output" != "null" ]; then
+        local disks partitions
+        disks=$(echo "$disk_output" | jq -sr '.[] | select(.spec.type == "disk") | "\(.metadata.id) \(.spec.dev_path)"')
+        partitions=$(echo "$disk_output" | jq -sr '.[] | select(.spec.type == "partition") | "\(.metadata.id) \(.spec.dev_path)"')
+
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            disk_name=$(echo "$line" | awk '{print $1}')
+            disk_path=$(echo "$line" | awk '{print $2}')
+            echo "$disk_name $disk_path"
+
+            while IFS= read -r part_line; do
+                [ -z "$part_line" ] && continue
+                part_name=$(echo "$part_line" | awk '{print $1}')
+                part_path=$(echo "$part_line" | awk '{print $2}')
+                if [[ "$part_name" == "$disk_name"* ]] && [[ "$part_name" != "$disk_name" ]]; then
+                    echo "  $part_name $part_path"
+                fi
+            done <<< "$partitions"
+        done <<< "$disks"
+    else
+        echo "Inga diskar hittades"
+    fi
+
+    echo -e "\033[34mUserVolumes:\033[0m"
+    local udc_status
+    udc_status=$(talosctl get userdiskconfigstatuses -n "$ip" -o json 2>/dev/null)
+    if [ -n "$udc_status" ] && [ "$udc_status" != "null" ]; then
+        local ready torndown
+        ready=$(echo "$udc_status" | jq -r '.spec.ready')
+        torndown=$(echo "$udc_status" | jq -r '.spec.tornDown')
+
+        if [ "$ready" = "true" ]; then
+            local all_disks
+            all_disks=$(talosctl get disks -n "$ip" -o json 2>/dev/null)
+            if [ -n "$all_disks" ]; then
+                local user_disks
+                user_disks=$(echo "$all_disks" | jq -sr '.[] | select(.spec.transport == "usb" or .spec.transport == "iscsi" or .spec.transport == "nvme" or .spec.transport == "ata") | "  \(.spec.pretty_size) @ \(.spec.dev_path)"')
+                if [ -n "$user_disks" ]; then
+                    echo "$user_disks"
+                else
+                    echo "  Inga externa diskar"
+                fi
+            fi
+        else
+            echo "  UserVolumes inte redo"
+        fi
+
+        if [ "$torndown" = "true" ]; then
+            echo "  (teardown)"
+        fi
+    else
+        echo "  Inga UserVolumes konfigurerade"
+    fi
 }
 
 main_kubernetes_iscsi_health() {

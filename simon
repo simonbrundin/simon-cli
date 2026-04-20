@@ -123,7 +123,7 @@ main() {
                     "deleting") main_kubernetes_deleting ;;
                     "terminating") main_kubernetes_terminating ;;
                     "remove selected") main_kubernetes_remove_selected ;;
-                    "longhorn test") main_kubernetes_longhorn_test ;;
+                    "longhorn test") shift 3; main_kubernetes_longhorn_test "$@" ;;
                     "install argocd") main_kubernetes_install_argocd ;;
                     "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
@@ -609,7 +609,7 @@ else
                     "deleting") main_kubernetes_deleting ;;
                     "terminating") main_kubernetes_terminating ;;
                     "remove selected") main_kubernetes_remove_selected ;;
-                    "longhorn test") main_kubernetes_longhorn_test ;;
+                    "longhorn test") shift 3; main_kubernetes_longhorn_test "$@" ;;
                     "install argocd") main_kubernetes_install_argocd ;;
                     "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
