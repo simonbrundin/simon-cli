@@ -245,10 +245,165 @@ main_kubernetes_remove_selected() {
 
 main_kubernetes_longhorn_test() {
     local selected_node="$1"
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
     
     if [ -z "$selected_node" ]; then
-        nodes=$(kubectl get nodes -o json | jq -r '.items[].metadata.name')
-        selected_node=$(fzfSelect "$nodes")
+        # Kör för alla noder
+        local all_nodes
+        all_nodes=$(kubectl get nodes -o json | jq -r '.items[] | select(.metadata.name | startswith("worker")) | .metadata.name')
+        
+        echo "=== Longhorn Disks för alla noder ==="
+        echo ""
+        
+        for selected_node in $all_nodes; do
+            # Hämta IP tidigt
+            if [ ! -f "$nodes_yaml" ]; then
+                echo -e "\033[31m❌ nodes.yaml not found: $nodes_yaml\033[0m"
+                continue
+            fi
+            local ip
+            ip=$(yq -r ".nodes[] | select(.name == \"$selected_node\") | .ip" "$nodes_yaml")
+            if [ -z "$ip" ] || [ "$ip" = "null" ]; then
+                echo -e "\033[31m❌ IP not found for node: $selected_node\033[0m"
+                continue
+            fi
+            
+            echo -e "\033[34m=== $selected_node ($ip) ===\033[0m"
+            
+            # === SCHEDULABLE STATUS ===
+            echo -e "\033[34mSchedulable Status:\033[0m"
+
+            local lhnodes_json
+            lhnodes_json=$(kubectl get nodes.longhorn.io -n longhorn-system -o json 2>/dev/null)
+
+            if [ -n "$lhnodes_json" ] && echo "$lhnodes_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+                local schedulable ready
+                schedulable=$(echo "$lhnodes_json" | jq -r ".items[] | select(.metadata.name == \"$selected_node\") | .status.conditions[] | select(.type == \"Schedulable\") | .status" 2>/dev/null)
+                ready=$(echo "$lhnodes_json" | jq -r ".items[] | select(.metadata.name == \"$selected_node\") | .status.conditions[] | select(.type == \"Ready\") | .status" 2>/dev/null)
+
+                if [ "$schedulable" = "True" ]; then
+                    echo -e "  Schedulable: \033[32mYes\033[0m"
+                else
+                    echo -e "  Schedulable: \033[31mNo\033[0m"
+                fi
+                if [ "$ready" = "True" ]; then
+                    echo -e "  Ready: \033[32mYes\033[0m"
+                else
+                    echo -e "  Ready: \033[31mNo\033[0m"
+                fi
+            fi
+
+            # === LONGHORN DISKS ===
+            echo -e "\033[34mLonghorn Disks:\033[0m"
+
+            local lh_node_json
+            lh_node_json=$(kubectl get nodes.longhorn.io "$selected_node" -n longhorn-system -o json 2>/dev/null)
+
+            if [ -n "$lh_node_json" ] && echo "$lh_node_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+                local disk_status_json
+                disk_status_json=$(echo "$lh_node_json" | jq -r '.status.diskStatus' 2>/dev/null)
+
+                if [ -n "$disk_status_json" ] && echo "$disk_status_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+                    while IFS='|' read -r disk_id; do
+                        [ -z "$disk_id" ] && continue
+
+                        local conditions_json ready schedulable storage_avail disk_path disk_name filesystem_type
+                        conditions_json=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".conditions // []" 2>/dev/null)
+                        ready=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Ready") | .status' 2>/dev/null)
+                        schedulable=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Schedulable") | .status' 2>/dev/null)
+                        storage_avail=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".storageAvailable" 2>/dev/null)
+                        disk_path=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskPath // \"\"" 2>/dev/null)
+                        disk_name=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskName // \"\"" 2>/dev/null)
+                        filesystem_type=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".filesystemType // \"\"" 2>/dev/null)
+
+                        local phys_disk=""
+                        local disk_exists=false
+                        local ssd_num=""
+
+                        if [ -n "$disk_path" ] && [ "$disk_path" != "null" ]; then
+                            ssd_num=$(echo "$disk_path" | sed 's|/var/mnt/ssd-||' | grep -o '^[0-9]*' || true)
+                        fi
+                        if [ -z "$ssd_num" ]; then
+                            ssd_num=$(echo "$disk_id" | sed 's/disk-//' | grep -o '^[0-9]*' || true)
+                        fi
+
+                        if [ "$ssd_num" = "1" ]; then
+                            phys_disk="sda"
+                            talosctl get dv -n "$ip" 2>/dev/null | grep -q "sda\s" && disk_exists=true
+                        elif [ "$ssd_num" = "2" ]; then
+                            phys_disk="sdb"
+                            talosctl get dv -n "$ip" 2>/dev/null | grep -q "sdb\s" && disk_exists=true
+                        elif [ "$ssd_num" = "3" ]; then
+                            phys_disk="sdc"
+                            talosctl get dv -n "$ip" 2>/dev/null | grep -q "sdc\s" && disk_exists=true
+                        fi
+
+                        local storage_str=""
+                        if [ -n "$storage_avail" ] && [ "$storage_avail" != "null" ] && [ "$storage_avail" -gt 0 ] 2>/dev/null; then
+                            storage_str=$(echo "$storage_avail" | awk '{printf "%.1f GB", $1/1024/1024/1024}')
+                        fi
+
+                        local disk_label="$disk_name"
+                        if [ -z "$disk_label" ] || [ "$disk_label" = "null" ] || [ "$disk_label" = "\"\"" ]; then
+                            disk_label="$disk_id"
+                        fi
+
+                        if [ "$ready" = "True" ] && [ "$schedulable" = "True" ]; then
+                            # Disken fungerar helt
+                            echo -e "  \033[32m$disk_label\033[0m"
+                            [ -n "$storage_str" ] && echo "    Available: $storage_str"
+                            [ -n "$phys_disk" ] && echo "    Physical: /dev/$phys_disk"
+                        elif [ "$ready" = "True" ] && [ "$schedulable" = "False" ]; then
+                            # Disken fungerar men är full/på max
+                            echo -e "  \033[33m$disk_label (full)\033[0m"
+                            [ -n "$storage_str" ] && echo "    Available: $storage_str"
+                            [ -n "$phys_disk" ] && echo "    Physical: /dev/$phys_disk"
+                            
+                            local reason
+                            reason=$(echo "$conditions_json" | jq -r '.[] | select(.status == "False") | .message' 2>/dev/null | head -1)
+                            if [ -n "$reason" ] && [ "$reason" != "null" ]; then
+                                if echo "$reason" | grep -q "DiskPressure\|not schedulable"; then
+                                    echo -e "    \033[31mOrsak: Disken är full\033[0m"
+                                else
+                                    echo "    Orsak: $reason"
+                                fi
+                            fi
+                        else
+                            # Disken fungerar inte
+                            echo -e "  \033[31m$disk_label\033[0m"
+                             
+                            local reason
+                            reason=$(echo "$conditions_json" | jq -r '.[] | select(.status == "False") | .message' 2>/dev/null | head -1)
+
+                            if [ -n "$phys_disk" ]; then
+                                if [ "$disk_exists" = true ]; then
+                                    echo "    Physical: /dev/$phys_disk"
+                                else
+                                    echo "    Physical: /dev/$phys_disk (saknas)"
+                                fi
+                            fi
+
+                            if [ "$disk_exists" = false ]; then
+                                echo -e "    \033[31mOrsak: Disken är inte inkopplad\033[0m"
+                            elif [ -n "$reason" ] && [ "$reason" != "null" ]; then
+                                if echo "$reason" | grep -q "no such file or directory"; then
+                                    echo -e "    \033[31mOrsak: Konfigurationsfil saknas\033[0m"
+                                elif echo "$reason" | grep -q "DiskPressure"; then
+                                    echo -e "    \033[31mOrsak: Disken är full\033[0m"
+                                elif echo "$reason" | grep -q "NotReady\|NoDiskInfo"; then
+                                    echo -e "    \033[31mOrsak: Disken är inte redo\033[0m"
+                                else
+                                    echo "    Orsak: $reason"
+                                fi
+                            fi
+                        fi
+                    done < <(echo "$disk_status_json" | jq -r 'to_entries[] | .key' 2>/dev/null)
+                fi
+            fi
+            
+            echo ""
+        done
+        return 0
     fi
     
     if [ -z "$selected_node" ]; then
@@ -257,6 +412,156 @@ main_kubernetes_longhorn_test() {
     fi
     
     echo -e "\033[34mVald node: \033[0m$selected_node\n"
+
+    # Hämta IP tidigt för att kunna använda i Longhorn Disks-sektionen
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
+    if [ ! -f "$nodes_yaml" ]; then
+        echo -e "\033[31m❌ nodes.yaml not found: $nodes_yaml\033[0m"
+        return 1
+    fi
+    local ip
+    ip=$(yq -r ".nodes[] | select(.name == \"$selected_node\") | .ip" "$nodes_yaml")
+    if [ -z "$ip" ] || [ "$ip" = "null" ]; then
+        echo -e "\033[31m❌ IP not found for node: $selected_node\033[0m"
+        return 1
+    fi
+
+    # === SCHEDULABLE STATUS ===
+    echo -e "\033[34m=== Schedulable Status ===\033[0m"
+
+    local lhnodes_json
+    lhnodes_json=$(kubectl get nodes.longhorn.io -n longhorn-system -o json 2>/dev/null)
+
+    if [ -n "$lhnodes_json" ] && echo "$lhnodes_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+        local schedulable ready
+        schedulable=$(echo "$lhnodes_json" | jq -r ".items[] | select(.metadata.name == \"$selected_node\") | .status.conditions[] | select(.type == \"Schedulable\") | .status" 2>/dev/null)
+        ready=$(echo "$lhnodes_json" | jq -r ".items[] | select(.metadata.name == \"$selected_node\") | .status.conditions[] | select(.type == \"Ready\") | .status" 2>/dev/null)
+
+        if [ "$schedulable" = "True" ]; then
+            echo -e "  Schedulable: \033[32mYes\033[0m"
+        else
+            echo -e "  Schedulable: \033[31mNo\033[0m"
+        fi
+        if [ "$ready" = "True" ]; then
+            echo -e "  Ready: \033[32mYes\033[0m"
+        else
+            echo -e "  Ready: \033[31mNo\033[0m"
+        fi
+    fi
+
+    # === LONGHORN DISKS ===
+    echo -e "\n\033[34m=== Longhorn Disks ===\033[0m"
+
+    local lh_node_json
+    lh_node_json=$(kubectl get nodes.longhorn.io "$selected_node" -n longhorn-system -o json 2>/dev/null)
+
+    if [ -n "$lh_node_json" ] && echo "$lh_node_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+        local disk_status_json
+        disk_status_json=$(echo "$lh_node_json" | jq -r '.status.diskStatus' 2>/dev/null)
+
+        local total_disks schedulable_count
+        total_disks=$(echo "$disk_status_json" | jq 'keys | length' 2>/dev/null)
+        schedulable_count=0
+
+        if [ -n "$disk_status_json" ] && echo "$disk_status_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+            while IFS='|' read -r disk_id; do
+                [ -z "$disk_id" ] && continue
+
+                local conditions_json ready schedulable storage_avail disk_path disk_name filesystem_type
+                conditions_json=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".conditions // []" 2>/dev/null)
+                ready=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Ready") | .status' 2>/dev/null)
+                schedulable=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Schedulable") | .status' 2>/dev/null)
+                storage_avail=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".storageAvailable" 2>/dev/null)
+                disk_path=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskPath // \"\"" 2>/dev/null)
+                disk_name=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskName // \"\"" 2>/dev/null)
+                filesystem_type=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".filesystemType // \"\"" 2>/dev/null)
+
+                # Hitta motsvarande fysisk disk
+                local phys_disk=""
+                local disk_exists=false
+                local ssd_num=""
+
+                # Försök från disk_path först, sen från disk_id (tex disk-2 -> 2)
+                if [ -n "$disk_path" ] && [ "$disk_path" != "null" ]; then
+                    ssd_num=$(echo "$disk_path" | sed 's|/var/mnt/ssd-||' | grep -o '^[0-9]*' || true)
+                fi
+                if [ -z "$ssd_num" ]; then
+                    ssd_num=$(echo "$disk_id" | sed 's/disk-//' | grep -o '^[0-9]*' || true)
+                fi
+
+                if [ "$ssd_num" = "1" ]; then
+                    phys_disk="sda"
+                    talosctl get dv -n "$ip" 2>/dev/null | grep -q "sda\s" && disk_exists=true
+                elif [ "$ssd_num" = "2" ]; then
+                    phys_disk="sdb"
+                    talosctl get dv -n "$ip" 2>/dev/null | grep -q "sdb\s" && disk_exists=true
+                elif [ "$ssd_num" = "3" ]; then
+                    phys_disk="sdc"
+                    talosctl get dv -n "$ip" 2>/dev/null | grep -q "sdc\s" && disk_exists=true
+                fi
+
+                # Formatera storage
+                local storage_str=""
+                if [ -n "$storage_avail" ] && [ "$storage_avail" != "null" ] && [ "$storage_avail" -gt 0 ] 2>/dev/null; then
+                    storage_str=$(echo "$storage_avail" | awk '{printf "%.1f GB", $1/1024/1024/1024}')
+                fi
+
+                # Label
+                local disk_label="$disk_name"
+                if [ -z "$disk_label" ] || [ "$disk_label" = "null" ] || [ "$disk_label" = "\"\"" ]; then
+                    disk_label="$disk_id"
+                fi
+
+                echo -n "  $disk_label: "
+
+                if [ "$ready" = "True" ] && [ "$schedulable" = "True" ]; then
+                    echo -e "\033[32mSchedulable\033[0m"
+                    [ -n "$storage_str" ] && echo "    Available: $storage_str"
+                    [ -n "$phys_disk" ] && echo "    Physical: /dev/$phys_disk"
+                    [ -n "$filesystem_type" ] && [ "$filesystem_type" != "null" ] && echo "    Filesystem: $filesystem_type"
+                    schedulable_count=$((schedulable_count + 1))
+                else
+                    echo -e "\033[31mNOT SCHEDULABLE\033[0m"
+                    
+                    # Hämta orsak först för att avgöra vad som är fel
+                    local reason
+                    reason=$(echo "$conditions_json" | jq -r '.[] | select(.status == "False") | .message' 2>/dev/null | head -1)
+
+                    if [ -n "$phys_disk" ]; then
+                        if [ "$disk_exists" = true ]; then
+                            echo "    Physical: /dev/$phys_disk"
+                        else
+                            echo "    Physical: /dev/$phys_disk (saknas - disk ej ansluten)"
+                        fi
+                    fi
+
+                    if [ "$disk_exists" = false ]; then
+                        # Disken är inte alls inkopplad
+                        echo -e "    \033[31mOrsak: Disken är inte inkopplad\033[0m"
+                    elif [ -n "$reason" ] && [ "$reason" != "null" ]; then
+                        # Gör felmeddelandet mer läsbart på svenska
+                        if echo "$reason" | grep -q "no such file or directory"; then
+                            echo -e "    \033[31mOrsak: Konfigurationsfil saknas på disken\033[0m"
+                        elif echo "$reason" | grep -q "DiskPressure"; then
+                            echo -e "    \033[31mOrsak: Disken är full\033[0m"
+                        elif echo "$reason" | grep -q "NotReady"; then
+                            echo -e "    \033[31mOrsak: Disken är inte redo\033[0m"
+                        elif echo "$reason" | grep -q "NoDiskInfo"; then
+                            echo -e "    \033[31mOrsak: Ingen disk-information hittades\033[0m"
+                        elif echo "$reason" | grep -q "space usage\|StorageAvailable\|less than"; then
+                            echo -e "    \033[31mOrsak: Disken är full\033[0m"
+                        elif echo "$reason" | grep -q "not schedulable"; then
+                            echo -e "    \033[31mOrsak: Disken har inte plats\033[0m"
+                        else
+                            echo "    Orsak: $reason"
+                        fi
+                    fi
+                fi
+            done < <(echo "$disk_status_json" | jq -r 'to_entries[] | .key' 2>/dev/null)
+        fi
+
+        echo ""
+        fi
 
     local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
     if [ ! -f "$nodes_yaml" ]; then
@@ -524,22 +829,50 @@ main_kubernetes_iscsi_health() {
 }
 
 main_kubernetes_health() {
+    local mode="relaxed"
+    if [ "$1" = "--strict" ]; then
+        mode="strict"
+    fi
+
+    local health_errors=()
+
+    handle_health_error() {
+        local msg="$1"
+        if [ "$mode" = "strict" ]; then
+            echo -e "\033[31m❌ $msg\033[0m"
+            return 1
+        else
+            echo -e "\033[31m⚠ $msg\033[0m"
+            health_errors+=("$msg")
+            return 0
+        fi
+    }
+
     echo "🔍 Kubernetes Health Check"
     echo "=========================="
+    if [ "$mode" = "strict" ]; then
+        echo "Mode: STRICT (abort on first error)"
+    else
+        echo "Mode: RELAXED (continue on errors, summarize at end)"
+    fi
+    echo ""
 
     local required_commands=("ping" "talosctl" "kubectl" "yq")
-    echo -e "\n\033[34m0. Kontrollerar required tools...\033[0m"
+    echo -e "\033[34m0. Kontrollerar required tools...\033[0m"
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
-            echo -e "\033[31m❌ $cmd not found\033[0m"
-            return 1
+            handle_health_error "$cmd not found"
+        else
+            echo -e "\033[32m✓ $cmd\033[0m"
         fi
-        echo -e "\033[32m✓ $cmd\033[0m"
     done
 
     local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
     if [ ! -f "$nodes_yaml" ]; then
-        echo -e "\033[31m❌ nodes.yaml not found: $nodes_yaml\033[0m"
+        handle_health_error "nodes.yaml not found: $nodes_yaml"
+    fi
+
+    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
         return 1
     fi
 
@@ -552,17 +885,22 @@ main_kubernetes_health() {
     worker_ips=$(yq -r '.nodes[] | select(.role == "worker") | .ip' "$nodes_yaml")
 
     echo -e "\033[33m  Controlplane nodes...\033[0m"
+    local controlplane_failed=0
     while IFS= read -r ip; do
         if [ -n "$ip" ]; then
             if ping -c 1 -W 2 "$ip" >/dev/null 2>&1; then
                 echo -e "\033[32m    ✓ $ip responds\033[0m"
             else
                 echo -e "\033[31m    ✗ $ip FAILED\033[0m"
-                echo -e "\033[31m❌ Controlplane node failed, aborting\033[0m"
-                return 1
+                handle_health_error "Controlplane node $ip failed ping"
+                controlplane_failed=1
             fi
         fi
     done <<< "$controlplane_ips"
+
+    if [ $controlplane_failed -eq 1 ] && [ "$mode" = "strict" ]; then
+        return 1
+    fi
 
     echo -e "\033[33m  Worker nodes...\033[0m"
     local total_workers=0 failed_workers=0
@@ -581,8 +919,7 @@ main_kubernetes_health() {
     if [ "$total_workers" -gt 0 ]; then
         local failure_percentage=$((failed_workers * 100 / total_workers))
         if [ "$failure_percentage" -gt 26 ]; then
-            echo -e "\033[31m❌ $failed_workers/$total_workers workers failed ($failure_percentage% > 26%), aborting\033[0m"
-            return 1
+            handle_health_error "$failed_workers/$total_workers workers failed ($failure_percentage% > 26%)"
         fi
     fi
 
@@ -592,19 +929,23 @@ main_kubernetes_health() {
     local talos_output
     talos_output=$(talosctl health --nodes "$talos_node" 2>&1)
     if [ $? -ne 0 ]; then
-        echo -e "\033[31m❌ talosctl health failed\033[0m"
+        handle_health_error "talosctl health failed"
         echo "$talos_output"
+    else
+        local green=$'\033[32m'
+        local reset=$'\033[0m'
+        echo "$talos_output" | while IFS= read -r line; do
+            if [[ "$line" == *": OK" ]] || [[ "$line" == *"..." ]]; then
+                echo "${green}${line}${reset}"
+            else
+                echo "$line"
+            fi
+        done
+    fi
+
+    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
         return 1
     fi
-    local green=$'\033[32m'
-    local reset=$'\033[0m'
-    echo "$talos_output" | while IFS= read -r line; do
-        if [[ "$line" == *": OK" ]] || [[ "$line" == *"..." ]]; then
-            echo "${green}${line}${reset}"
-        else
-            echo "$line"
-        fi
-    done
 
     echo -e "\n\033[34m5. kubectl get nodes...\033[0m"
     kubectl get nodes | while IFS= read -r line; do
@@ -629,7 +970,7 @@ main_kubernetes_health() {
         fi
     done < <(kubectl get pods -n argocd --no-headers 2>/dev/null)
     if [ $has_error -eq 1 ]; then
-        echo -e "\n\033[31m❌ Det finns poddar som inte kör i argocd\033[0m"
+        handle_health_error "Det finns poddar som inte kör i argocd"
         continue_after_argocd=0
     fi
 
@@ -638,11 +979,14 @@ main_kubernetes_health() {
     pending_csrs=$(kubectl get csr --no-headers 2>/dev/null | grep "Pending" | wc -l)
 
     if [ "$pending_csrs" -gt 0 ]; then
-        echo -e "\033[31m❌ Det finns $pending_csrs pending CSR som behöver godkännas:\033[0m"
+        handle_health_error "Det finns $pending_csrs pending CSR som behöver godkännas"
         kubectl get csr 2>/dev/null | grep "Pending"
-        return 1
     else
         echo -e "\033[32m  ✓ Inga pending CSR\033[0m"
+    fi
+
+    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
+        return 1
     fi
 
     echo -e "\n\033[34m7. Longhorn status...\033[0m"
@@ -672,36 +1016,38 @@ main_kubernetes_health() {
     local schedulable_disks=0
 
     if ! kubectl get nodes.longhorn.io -n longhorn-system >/dev/null 2>&1; then
-        echo -e "\n\033[31m❌ Kan inte hämta Longhorn-nodes\033[0m"
-        return 1
+        handle_health_error "Kan inte hämta Longhorn-nodes"
+    else
+        for node in $(kubectl get nodes.longhorn.io -n longhorn-system -o jsonpath='{.items[*].metadata.name}'); do
+            local node_schedulable=0
+            local node_total=0
+            local disk_status
+            disk_status=$(kubectl get nodes.longhorn.io "$node" -n longhorn-system -o jsonpath='{.status.diskStatus}' 2>/dev/null)
+            if [ -n "$disk_status" ] && [ "$disk_status" != "null" ]; then
+                for disk in $(echo "$disk_status" | jq -r 'keys[]'); do
+                    node_total=$((node_total + 1))
+                    local schedulable
+                    schedulable=$(echo "$disk_status" | jq -r ".[\"$disk\"].conditions[] | select(.type == \"Schedulable\") | .status")
+                    if [ "$schedulable" = "True" ]; then
+                        node_schedulable=$((node_schedulable + 1))
+                    fi
+                done
+            fi
+            if [ "$node_schedulable" -eq "$node_total" ] && [ "$node_total" -gt 0 ]; then
+                echo -e "  ${green}$node: $node_schedulable/$node_total diskar schedulable${reset}"
+                schedulable_disks=$((schedulable_disks + 1))
+            else
+                echo -e "  ${yellow}$node: $node_schedulable/$node_total diskar schedulable${reset}"
+                unschedulable_disks=$((unschedulable_disks + 1))
+            fi
+        done
     fi
 
-    for node in $(kubectl get nodes.longhorn.io -n longhorn-system -o jsonpath='{.items[*].metadata.name}'); do
-        local node_schedulable=0
-        local node_total=0
-        local disk_status
-        disk_status=$(kubectl get nodes.longhorn.io "$node" -n longhorn-system -o jsonpath='{.status.diskStatus}' 2>/dev/null)
-        if [ -n "$disk_status" ] && [ "$disk_status" != "null" ]; then
-            for disk in $(echo "$disk_status" | jq -r 'keys[]'); do
-                node_total=$((node_total + 1))
-                local schedulable
-                schedulable=$(echo "$disk_status" | jq -r ".[\"$disk\"].conditions[] | select(.type == \"Schedulable\") | .status")
-                if [ "$schedulable" = "True" ]; then
-                    node_schedulable=$((node_schedulable + 1))
-                fi
-            done
-        fi
-        if [ "$node_schedulable" -eq "$node_total" ] && [ "$node_total" -gt 0 ]; then
-            echo -e "  ${green}$node: $node_schedulable/$node_total diskar schedulable${reset}"
-            schedulable_disks=$((schedulable_disks + 1))
-        else
-            echo -e "  ${yellow}$node: $node_schedulable/$node_total diskar schedulable${reset}"
-            unschedulable_disks=$((unschedulable_disks + 1))
-        fi
-    done
-
     if [ "$faulted" -gt 0 ] || [ "$unknown" -gt 0 ] || [ "$unschedulable_disks" -gt 0 ]; then
-        echo -e "\n\033[31m❌ Det finns problem med Longhorn\033[0m"
+        handle_health_error "Det finns problem med Longhorn (faulted=$faulted, unknown=$unknown, unschedulable=$unschedulable_disks)"
+    fi
+
+    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
         return 1
     fi
 
@@ -730,58 +1076,72 @@ main_kubernetes_health() {
     done < <(kubectl get pods -n vault --no-headers 2>/dev/null)
 
     if [ $vault_pods_error -eq 1 ]; then
-        echo -e "\n\033[31m❌ Det finns problem med Vault-poddar\033[0m"
-        return 1
+        handle_health_error "Det finns problem med Vault-poddar"
     fi
 
     echo -e "\n\033[33m  Unsealed status...\033[0m"
     local vault_pod
     vault_pod=$(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -z "$vault_pod" ]; then
-        echo -e "\033[31m❌ No Vault pod found in namespace vault\033[0m"
-        return 1
-    fi
-    local vault_status
-    vault_status=$(kubectl exec -n vault "$vault_pod" -- vault status 2>/dev/null | grep "Seal Status" | awk '{print $3}')
-    if [ "$vault_status" = "unsealed" ]; then
-        echo -e "\033[32m  ✓ Vault is unsealed\033[0m"
+        handle_health_error "No Vault pod found in namespace vault"
     else
-        echo -e "\033[31m❌ Vault is NOT unsealed (status: $vault_status)\033[0m"
-        return 1
+        local vault_status
+        vault_status=$(kubectl exec -n vault "$vault_pod" -- vault status 2>/dev/null | grep "Seal Status" | awk '{print $3}')
+        if [ "$vault_status" = "unsealed" ]; then
+            echo -e "\033[32m  ✓ Vault is unsealed\033[0m"
+        else
+            handle_health_error "Vault is NOT unsealed (status: $vault_status)"
+        fi
     fi
 
     echo -e "\n\033[33m  Health endpoint...\033[0m"
-    local vault_health
-    vault_health=$(kubectl exec -n vault "$vault_pod" -- vault read sys/health -format=json 2>/dev/null)
-    if [ -n "$vault_health" ]; then
-        local vault_initialized vault_sealed vault_standby
-        vault_initialized=$(echo "$vault_health" | jq -r '.data.initialized' 2>/dev/null)
-        vault_sealed=$(echo "$vault_health" | jq -r '.data.sealed' 2>/dev/null)
-        vault_standby=$(echo "$vault_health" | jq -r '.data.standby' 2>/dev/null)
-        echo -e "    Initialized: ${vault_initialized}"
-        echo -e "    Sealed: ${vault_sealed}"
-        echo -e "    Standby: ${vault_standby}"
-    else
-        echo -e "\033[31m❌ Kunde inte läsa Vault health\033[0m"
+    if [ -n "$vault_pod" ]; then
+        local vault_health
+        vault_health=$(kubectl exec -n vault "$vault_pod" -- vault read sys/health -format=json 2>/dev/null)
+        if [ -n "$vault_health" ]; then
+            local vault_initialized vault_sealed vault_standby
+            vault_initialized=$(echo "$vault_health" | jq -r '.data.initialized' 2>/dev/null)
+            vault_sealed=$(echo "$vault_health" | jq -r '.data.sealed' 2>/dev/null)
+            vault_standby=$(echo "$vault_health" | jq -r '.data.standby' 2>/dev/null)
+            echo -e "    Initialized: ${vault_initialized}"
+            echo -e "    Sealed: ${vault_sealed}"
+            echo -e "    Standby: ${vault_standby}"
+        else
+            handle_health_error "Kunde inte läsa Vault health"
+        fi
     fi
 
     echo -e "\n\033[33m  Test läsa secret...\033[0m"
-    local secret_test
-    secret_test=$(kubectl exec -n vault "$vault_pod" -- vault kv get secret/data/test 2>/dev/null)
-    if [ -n "$secret_test" ]; then
-        echo -e "\033[32m  ✓ Kan läsa secrets\033[0m"
-    else
-        echo -e "\033[33m  ⚠ Kan inte läsa test-secret (kan vara normalt)\033[0m"
+    if [ -n "$vault_pod" ]; then
+        local secret_test
+        secret_test=$(kubectl exec -n vault "$vault_pod" -- vault kv get secret/data/test 2>/dev/null)
+        if [ -n "$secret_test" ]; then
+            echo -e "\033[32m  ✓ Kan läsa secrets\033[0m"
+        else
+            handle_health_error "Kan inte läsa test-secret"
+        fi
+    fi
+
+    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
+        return 1
     fi
 
     if [ "$continue_after_argocd" -eq 0 ]; then
-        return 1
+        handle_health_error "ArgoCD has failing pods"
     fi
 
     echo -e "\n\033[34m9. Versioner...\033[0m"
     main_kubernetes_versions
 
     main_kubernetes_iscsi_health
+
+    if [ ${#health_errors[@]} -gt 0 ]; then
+        echo -e "\n\033[31m❌ Health check failures: ${#health_errors[@]}\033[0m"
+        for err in "${health_errors[@]}"; do
+            echo -e "  \033[31m• $err\033[0m"
+        done
+        return 1
+    fi
 
     echo -e "\n\033[32m✅ Alla health checks klar!\033[0m"
     return 0

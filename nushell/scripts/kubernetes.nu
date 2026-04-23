@@ -295,16 +295,175 @@ def "main kubernetes remove selected" [] {
 }
 
 # Testa node för longhorn
-def "main kubernetes longhorn test" [] {
-  # Steg 1: Välj node
+def "main kubernetes longhorn test" [node: string?] {
+  # Steg 1: Välj node (om inte angiven)
   let nodes = (kubectl get nodes -o json | from json | get items | get metadata.name)
-  let selected_node = fzfSelect $nodes
+  let selected_node = if ($node | is-not-null) {
+    $node
+  } else {
+    fzfSelect $nodes
+  }
   print $"(ansi blue)Vald node: (ansi reset)($selected_node)\n"
 
-  # # Välj sätt
-  # print $"(ansi blue)Välj sätt:(ansi reset)"
-  # let selected_setting = fzfSelect [spec, 0.spec]
-  # print $selected_setting
+  # === LONGHORN SPECIFIK FELINFORMATION ===
+  print $"\n(ansi blue)=== Longhorn Volume Status ===(ansi reset)"
+
+  # Hämta alla Longhorn-volymer
+  let volumes = (kubectl get volumes.longhorn.io -n longhorn-system -o json | from json | get items)
+
+  # Visa volymer som inte är i "running"-state
+  let non_running = ($volumes | where status.state != "running")
+  if ($non_running | length) > 0 {
+    for vol in $non_running {
+      let vol_name = ($vol | get metadata.name)
+      let vol_state = ($vol | get status.state)
+      let error_msg = (try { $vol | get status.errorMessage } catch { "null" })
+      let attach_node = (try { $vol | get status.currentNodeID } catch { "null" })
+
+      print $"  (ansi red)⚠(ansi reset) ($vol_name)"
+      print $"      State: (ansi red)($vol_state)(ansi reset)"
+      if ($attach_node | str length) > 0 and $attach_node != "null" {
+        print $"      Attached to: ($attach_node)"
+      }
+      if ($error_msg | str length) > 0 and $error_msg != "null" {
+        print $"(ansi red)      Error: ($error_msg)(ansi reset)"
+      }
+    }
+  } else {
+    print $"(ansi green)  Alla volymer är i running-state(ansi reset)"
+  }
+
+  # === LONGHORN NODE STATUS ===
+  print $"\n(ansi blue)=== Longhorn Node Status ===(ansi reset)"
+
+  let lhnodes = (kubectl get nodes.longhorn.io -n longhorn-system -o json | from json | get items)
+
+  # Hitta noder med problem
+  let nodes_with_issues = ($lhnodes | where {
+    let node = $in
+    let has_false = (try { ($node | get status.conditions | where status == "False") | length } catch { 0 })
+    $has_false > 0
+  })
+
+  if ($nodes_with_issues | length) > 0 {
+    for lhnode in $nodes_with_issues {
+      let node_name = ($lhnode | get metadata.name)
+      let conditions = (try { $lhnode | get status.conditions | where status == "False" } catch { [] })
+
+      print $"  (ansi red)⚠(ansi reset) ($node_name)"
+      for cond in $conditions {
+        let ctype = ($cond | get type)
+        let reason = ($cond | get reason)
+        let message = ($cond | get message)
+        print $"      ($ctype): (ansi red)($reason)(ansi reset)"
+        if ($message | str length) > 0 {
+          print $"        -> ($message)"
+        }
+      }
+    }
+  } else {
+    print $"(ansi green)  Alla Longhorn-noder är normala(ansi reset)"
+  }
+
+  # === SCHEDULABLE NODER ===
+  print $"\n(ansi blue)=== Schedulable Status ===(ansi reset)"
+
+  # Jämför med vald node
+  let selected_lhnode = ($lhnodes | where metadata.name == $selected_node)
+  if ($selected_lhnode | length) > 0 {
+    let schedulable = (try { $selected_lhnode | get status.conditions | where type == "Schedulable" | get status | first } catch { "unknown" })
+    let ready = (try { $selected_lhnode | get status.conditions | where type == "Ready" | get status | first } catch { "unknown" })
+
+    if $schedulable == "True" {
+      print $"  Schedulable: (ansi green)Yes(ansi reset)"
+    } else {
+      print $"  Schedulable: (ansi red)No(ansi reset)"
+    }
+    if $ready == "True" {
+      print $"  Ready: (ansi green)Yes(ansi reset)"
+    } else {
+      print $"  Ready: (ansi red)No(ansi reset)"
+    }
+  }
+
+  # === KUBERNETES NODE STATUS ===
+  print $"\n(ansi blue)=== Kubernetes Node Status ===(ansi reset)"
+  let k8s_node = (kubectl get node $selected_node -o json 2>/dev/null | from json)
+  if ($k8s_node | is-not-null) {
+    let node_ready = (try { $k8s_node.status.conditions | where type == "Ready" | get status | first } catch { "unknown" })
+    let node_memory := (try { $k8s_node.status.capacity.memory } catch { "null" })
+    let node_allocatable := (try { $k8s_node.status.allocatable.memory } catch { "null" })
+
+    if $node_ready == "True" {
+      print $"  Node: (ansi green)Ready(ansi reset)"
+    } else {
+      print $"  Node: (ansi red)($node_ready)(ansi reset)"
+    }
+    print $"  Allocatable Memory: ($node_allocatable) / ($node_memory)"
+  } else {
+    print $"  (ansi red)Node finns inte i Kubernetes(ansi reset)"
+  }
+
+  # === LONGHORN PODS PÅ NODEN ===
+  print $"\n(ansi blue)=== Longhorn Pods på noden ===(ansi reset)"
+  let lh_pods = (kubectl get pods -n longhorn-system -o json | from json | get items | where spec.nodeName == $selected_node)
+  if ($lh_pods | length) > 0 {
+    for pod in $lh_pods {
+      let pod_name = ($pod | get metadata.name)
+      let pod_status = ($pod | get status.phase)
+      let ready_cnt = (try { ($pod.status.containerStatuses | where ready == true) | length } catch { 0 })
+      let total_cnt = (try { ($pod.status.containerStatuses) | length } catch { 0 })
+      print $"  ($pod_name): ($pod_status) ($ready_cnt)/($total_cnt)"
+    }
+  } else {
+    print $"  (ansi yellow)Inga Longhorn-pods på denna nod(ansi reset)"
+  }
+
+  # === INSTANCE MANAGERS ===
+  print $"\n(ansi blue)=== Instance Manager Status ===(ansi reset)"
+  let inst_managers = (kubectl get instancemanagers.longhorn.io -n longhorn-system -o json | from json | get items)
+  for im in $inst_managers {
+    let im_name = ($im | get metadata.name)
+    let im_node = (try { $im.spec.nodeID } catch { "null" })
+    let im_state = (try { $im.status.currentState } catch { "null" })
+
+    if $im_node == $selected_node {
+      if $im_state == "running" {
+        print $"  ($im_name): (ansi green)($im_state)(ansi reset)"
+      } else {
+        print $"  ($im_name): (ansi red)($im_state)(ansi reset)"
+      }
+    }
+  }
+
+  # === DISK RECOVERY / AVAILABLE DISKS ===
+  print $"\n(ansi blue)=== Longhorn Disks ===(ansi reset)"
+  let lh_disks = (kubectl get disks.longhorn.io -n longhorn-system -o json | from json | get items)
+  let disks_on_node = ($lh_disks | where spec.nodeID == $selected_node)
+  if ($disks_on_node | length) > 0 {
+    for disk in $disks_on_node {
+      let disk_name = ($disk | get metadata.name)
+      let disk_available := (try { $disk.status.availableStorage } catch { "null" })
+      let disk_in_use := (try { $disk.status.inUseStorage } catch { "null" })
+      let disk_conditions := (try { $disk.status.conditions | where status == "False" } catch { [] })
+
+      print $"  ($disk_name):"
+      print $"    Available: ($disk_available)"
+      print $"    In Use: ($disk_in_use)"
+      if ($disk_conditions | length) > 0 {
+        for cond in $disk_conditions {
+          let ctype = ($cond | get type)
+          print $"    (ansi red)($ctype): ($cond.reason)(ansi reset)"
+        }
+      }
+    }
+  } else {
+    print $"  (ansi red)Inga Longhorn-diskar på denna nod(ansi reset)"
+  }
+
+  # === TALOS-INFORMATION (för vald nod) ===
+  print $"\n(ansi blue)=== Talos Information ===(ansi reset)"
+
   print $"(ansi blue)Installationsdisk:(ansi reset)"
   let install_disk = (talosctl get machineconfig -n $selected_node -o yaml | from yaml | get spec | from yaml | get machine.install.disk)
   if $install_disk == "/dev/mmcblk1" {

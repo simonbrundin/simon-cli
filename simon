@@ -229,7 +229,7 @@ main() {
                 ;;
             cluster)
                 case "$2" in
-                    health) main_kubernetes_health ;;
+                    health) shift 2; main_kubernetes_health "$@" ;;
                     *) echo "Unknown cluster command: $2" ;;
                 esac
                 ;;
@@ -721,7 +721,7 @@ else
                 ;;
             cluster)
                 case "$2" in
-                    health) main_kubernetes_health ;;
+                    health) shift 2; main_kubernetes_health "$@" ;;
                     *) echo "Unknown cluster command: $2" ;;
                 esac
                 ;;
