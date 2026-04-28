@@ -307,11 +307,12 @@ main_kubernetes_longhorn_test() {
                     while IFS='|' read -r disk_id; do
                         [ -z "$disk_id" ] && continue
 
-                        local conditions_json ready schedulable storage_avail disk_path disk_name filesystem_type
+                        local conditions_json ready schedulable storage_avail storage_maximum disk_path disk_name filesystem_type
                         conditions_json=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".conditions // []" 2>/dev/null)
                         ready=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Ready") | .status' 2>/dev/null)
                         schedulable=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Schedulable") | .status' 2>/dev/null)
                         storage_avail=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".storageAvailable" 2>/dev/null)
+                        storage_maximum=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".storageMaximum" 2>/dev/null)
                         disk_path=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskPath // \"\"" 2>/dev/null)
                         disk_name=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskName // \"\"" 2>/dev/null)
                         filesystem_type=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".filesystemType // \"\"" 2>/dev/null)
@@ -338,9 +339,12 @@ main_kubernetes_longhorn_test() {
                             talosctl get dv -n "$ip" 2>/dev/null | grep -q "sdc\s" && disk_exists=true
                         fi
 
-                        local storage_str=""
+                        local storage_str="" maximum_str=""
                         if [ -n "$storage_avail" ] && [ "$storage_avail" != "null" ] && [ "$storage_avail" -gt 0 ] 2>/dev/null; then
                             storage_str=$(echo "$storage_avail" | awk '{printf "%.1f GB", $1/1024/1024/1024}')
+                        fi
+                        if [ -n "$storage_maximum" ] && [ "$storage_maximum" != "null" ] && [ "$storage_maximum" -gt 0 ] 2>/dev/null; then
+                            maximum_str=$(echo "$storage_maximum" | awk '{printf "%.1f GB", $1/1024/1024/1024}')
                         fi
 
                         local disk_label="$disk_name"
@@ -351,11 +355,13 @@ main_kubernetes_longhorn_test() {
                         if [ "$ready" = "True" ] && [ "$schedulable" = "True" ]; then
                             # Disken fungerar helt
                             echo -e "  \033[32m$disk_label\033[0m"
+                            [ -n "$maximum_str" ] && echo "    Capacity: $maximum_str"
                             [ -n "$storage_str" ] && echo "    Available: $storage_str"
                             [ -n "$phys_disk" ] && echo "    Physical: /dev/$phys_disk"
                         elif [ "$ready" = "True" ] && [ "$schedulable" = "False" ]; then
                             # Disken fungerar men är full/på max
                             echo -e "  \033[33m$disk_label (full)\033[0m"
+                            [ -n "$maximum_str" ] && echo "    Capacity: $maximum_str"
                             [ -n "$storage_str" ] && echo "    Available: $storage_str"
                             [ -n "$phys_disk" ] && echo "    Physical: /dev/$phys_disk"
                             
@@ -462,16 +468,18 @@ main_kubernetes_longhorn_test() {
         local total_disks schedulable_count
         total_disks=$(echo "$disk_status_json" | jq 'keys | length' 2>/dev/null)
         schedulable_count=0
+        local has_not_schedulable=false
 
         if [ -n "$disk_status_json" ] && echo "$disk_status_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
             while IFS='|' read -r disk_id; do
                 [ -z "$disk_id" ] && continue
 
-                local conditions_json ready schedulable storage_avail disk_path disk_name filesystem_type
+                local conditions_json ready schedulable storage_avail storage_maximum disk_path disk_name filesystem_type
                 conditions_json=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".conditions // []" 2>/dev/null)
                 ready=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Ready") | .status' 2>/dev/null)
                 schedulable=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Schedulable") | .status' 2>/dev/null)
                 storage_avail=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".storageAvailable" 2>/dev/null)
+                storage_maximum=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".storageMaximum" 2>/dev/null)
                 disk_path=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskPath // \"\"" 2>/dev/null)
                 disk_name=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskName // \"\"" 2>/dev/null)
                 filesystem_type=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".filesystemType // \"\"" 2>/dev/null)
@@ -501,9 +509,12 @@ main_kubernetes_longhorn_test() {
                 fi
 
                 # Formatera storage
-                local storage_str=""
+                local storage_str="" maximum_str=""
                 if [ -n "$storage_avail" ] && [ "$storage_avail" != "null" ] && [ "$storage_avail" -gt 0 ] 2>/dev/null; then
                     storage_str=$(echo "$storage_avail" | awk '{printf "%.1f GB", $1/1024/1024/1024}')
+                fi
+                if [ -n "$storage_maximum" ] && [ "$storage_maximum" != "null" ] && [ "$storage_maximum" -gt 0 ] 2>/dev/null; then
+                    maximum_str=$(echo "$storage_maximum" | awk '{printf "%.1f GB", $1/1024/1024/1024}')
                 fi
 
                 # Label
@@ -516,12 +527,16 @@ main_kubernetes_longhorn_test() {
 
                 if [ "$ready" = "True" ] && [ "$schedulable" = "True" ]; then
                     echo -e "\033[32mSchedulable\033[0m"
+                    [ -n "$maximum_str" ] && echo "    Capacity: $maximum_str"
                     [ -n "$storage_str" ] && echo "    Available: $storage_str"
                     [ -n "$phys_disk" ] && echo "    Physical: /dev/$phys_disk"
                     [ -n "$filesystem_type" ] && [ "$filesystem_type" != "null" ] && echo "    Filesystem: $filesystem_type"
                     schedulable_count=$((schedulable_count + 1))
                 else
                     echo -e "\033[31mNOT SCHEDULABLE\033[0m"
+                    [ -n "$maximum_str" ] && echo "    Capacity: $maximum_str"
+                    [ -n "$storage_str" ] && echo "    Available: $storage_str"
+                    has_not_schedulable=true
                     
                     # Hämta orsak först för att avgöra vad som är fel
                     local reason
@@ -769,6 +784,93 @@ main_kubernetes_longhorn_test() {
         fi
     else
         echo "  Inga UserVolumes konfigurerade"
+    fi
+
+    echo -e "\033[34mDiskar i Longhorn vs fysiskt inkopplade:\033[0m"
+    local lh_node_json
+    lh_node_json=$(kubectl get nodes.longhorn.io "$selected_node" -n longhorn-system -o json 2>/dev/null)
+
+    local physical_disks_json
+    physical_disks_json=$(talosctl get disks -n "$ip" -o json 2>/dev/null)
+
+    local ssd_in_lh=""
+    if [ -n "$lh_node_json" ] && echo "$lh_node_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+        local disk_status_json
+        disk_status_json=$(echo "$lh_node_json" | jq -r '.status.diskStatus')
+        if [ -n "$disk_status_json" ] && [ "$disk_status_json" != "null" ]; then
+            while IFS='|' read -r lh_disk_id; do
+                [ -z "$lh_disk_id" ] && continue
+                local disk_path
+                disk_path=$(echo "$disk_status_json" | jq -r ".\"$lh_disk_id\".diskPath // empty")
+                if [ -n "$disk_path" ] && [ "$disk_path" != "null" ]; then
+                    local ssd_num
+                    ssd_num=$(echo "$disk_path" | sed 's|/var/mnt/ssd-||' | grep -o '^[0-9]*' || echo "")
+                    local phys_disk=""
+                    case "$ssd_num" in
+                        1) phys_disk="/dev/sda" ;;
+                        2) phys_disk="/dev/sdb" ;;
+                        3) phys_disk="/dev/sdc" ;;
+                    esac
+                    local avail
+                    avail=$(echo "$disk_status_json" | jq -r ".\"$lh_disk_id\".storageAvailable" 2>/dev/null)
+                    local avail_str=""
+                    if [ -n "$avail" ] && [ "$avail" != "null" ] && [ "$avail" -gt 0 ] 2>/dev/null; then
+                        avail_str=" ($(echo "$avail" | awk '{printf "%.0f GB", $1/1024/1024/1024}') ledigt)"
+                    fi
+                    if [ -n "$phys_disk" ]; then
+                        echo "  ssd-$ssd_num -> $lh_disk_id @ $phys_disk$avail_str (i Longhorn)"
+                    else
+                        echo "  ssd-$ssd_num -> $lh_disk_id$avail_str (i Longhorn)"
+                    fi
+                    if [ -n "$ssd_num" ]; then
+                        ssd_in_lh="$ssd_in_lh $ssd_num "
+                    fi
+                fi
+            done < <(echo "$disk_status_json" | jq -r 'to_entries[] | .key' 2>/dev/null)
+        fi
+    fi
+
+    local patch_file="$HOME/repos/infrastructure/talos/patches/nodes/$selected_node.yaml"
+    local configured_volumes
+    configured_volumes=$(yq -r 'select(.kind == "UserVolumeConfig") | .name' "$patch_file" 2>/dev/null | tr '\n' ' ')
+
+    if [ -n "$physical_disks_json" ] && [ "$physical_disks_json" != "null" ]; then
+        while IFS= read -r disk_line; do
+            [ -z "$disk_line" ] && continue
+            local dev_path pretty_size bus_path disk_name
+            dev_path=$(echo "$disk_line" | jq -r '.spec.dev_path')
+            pretty_size=$(echo "$disk_line" | jq -r '.spec.pretty_size')
+            bus_path=$(echo "$disk_line" | jq -r '.spec.bus_path // empty')
+            disk_name=$(basename "$dev_path")
+
+            if [ "$bus_path" = "/virtual" ]; then
+                continue
+            fi
+
+            local ssd_num=""
+            case "$disk_name" in
+                sda) ssd_num="1" ;;
+                sdb) ssd_num="2" ;;
+                sdc) ssd_num="3" ;;
+            esac
+
+            if echo "$ssd_in_lh" | grep -q " $ssd_num "; then
+                continue
+            fi
+
+            echo -e "  \033[33m$disk_name\033[0m"
+            echo "    $pretty_size @ $dev_path"
+            echo -e "    \033[31mEj tillagd i Longhorn\033[0m"
+            if echo "$configured_volumes" | grep -qx "$disk_name"; then
+                echo "    (konfigurerad i patch-fil men ej synlig i Longhorn)"
+            else
+                echo "    Lägg till med: simon kubernetes longhorn add disk"
+            fi
+        done < <(echo "$physical_disks_json" | jq -c 'select(.spec.bus_path != "/virtual" and .spec.transport == "usb")')
+    fi
+
+    if [ "$has_not_schedulable" = true ]; then
+        return 1
     fi
 }
 
@@ -1223,4 +1325,473 @@ main_kubernetes_versions() {
             fi
         fi
     fi
+}
+
+main_kubernetes_longhorn_add_disk() {
+    local selected_node="$1"
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
+
+    if [ -z "$selected_node" ]; then
+        echo -e "\033[34mVälj nod:\033[0m"
+        kubectl get nodes -o json | jq -r '.items[] | select(.metadata.name | startswith("worker")) | .metadata.name' | while read -r node; do
+            echo "  - $node"
+        done
+        echo ""
+        echo -n "Ange nodnamn: "
+        read -r selected_node
+    fi
+
+    if [ -z "$selected_node" ]; then
+        echo -e "\033[31m❌ inget nodnamn angivet\033[0m"
+        return 1
+    fi
+
+    local ip
+    ip=$(yq -r ".nodes[] | select(.name == \"$selected_node\") | .ip" "$nodes_yaml")
+    if [ -z "$ip" ] || [ "$ip" = "null" ]; then
+        echo -e "\033[31m❌ IP not found for node: $selected_node\033[0m"
+        return 1
+    fi
+
+    local patch_file="$HOME/repos/infrastructure/talos/patches/nodes/$selected_node.yaml"
+    if [ ! -f "$patch_file" ]; then
+        echo -e "\033[31m❌ patch-fil hittades inte: $patch_file\033[0m"
+        return 1
+    fi
+
+    echo -e "\033[34m=== Lägger till disk i Longhorn på $selected_node ===\033[0m\n"
+
+    local disks_json
+    disks_json=$(talosctl get disks -n "$ip" -o json 2>/dev/null)
+    if [ -z "$disks_json" ] || [ "$disks_json" = "null" ]; then
+        echo -e "\033[31m❌ kunde inte hämta diskar från $ip\033[0m"
+        return 1
+    fi
+
+    local configured_volumes
+    configured_volumes=$(yq -r 'select(.kind == "UserVolumeConfig") | .name' "$patch_file" 2>/dev/null | tr '\n' ' ')
+
+    local configured_matchers=""
+    while IFS= read -r matcher; do
+        [ -z "$matcher" ] && continue
+        configured_matchers="$configured_matchers|$matcher"
+    done < <(yq -r 'select(.kind == "UserVolumeConfig") | .provisioning.diskSelector.match' "$patch_file" 2>/dev/null)
+    configured_matchers="${configured_matchers#\|}"
+
+    local available_disks_json="[]"
+    while IFS= read -r disk_line; do
+        [ -z "$disk_line" ] && continue
+        local dev_path size pretty_size bus_path by_id
+        dev_path=$(echo "$disk_line" | jq -r '.spec.dev_path')
+        size=$(echo "$disk_line" | jq -r '.spec.size')
+        pretty_size=$(echo "$disk_line" | jq -r '.spec.pretty_size')
+        bus_path=$(echo "$disk_line" | jq -r '.spec.bus_path // empty')
+
+        local disk_name
+        disk_name=$(basename "$dev_path")
+
+        if echo "$configured_volumes" | grep -qx "$disk_name"; then
+            continue
+        fi
+
+        if [ "$bus_path" = "/virtual" ]; then
+            continue
+        fi
+
+        by_id=$(echo "$disk_line" | jq -r '.spec.symlinks[]' 2>/dev/null | grep by-id | head -1 | sed 's|.*by-id/||')
+        if [ -n "$by_id" ] && [ "$by_id" != "null" ] && [ "$by_id" != "" ]; then
+            local skip=false
+            if [ -n "$configured_matchers" ]; then
+                local lh_node_json
+                lh_node_json=$(kubectl get nodes.longhorn.io "$selected_node" -n longhorn-system -o json 2>/dev/null)
+                for matcher in $configured_matchers; do
+                    local target_id
+                    target_id=$(echo "$matcher" | sed "s|.*by-id/||;s|'.*||")
+                    if [ -n "$target_id" ] && [ "$target_id" != "in" ] && [ "$target_id" != "disk.symlinks" ]; then
+                        if echo "$disk_line" | jq -r '.spec.symlinks[]' 2>/dev/null | grep -q "by-id/$target_id"; then
+                            local ssd_num=""
+                            case "$disk_name" in
+                                sda) ssd_num="1" ;;
+                                sdb) ssd_num="2" ;;
+                                sdc) ssd_num="3" ;;
+                            esac
+                            local disk_in_lh=false
+                            if [ -n "$ssd_num" ] && [ -n "$lh_node_json" ] && echo "$lh_node_json" | jq -s 'length > 0' 2>/dev/null | grep -q "true"; then
+                                local disk_status_json
+                                disk_status_json=$(echo "$lh_node_json" | jq -r '.status.diskStatus')
+                                if [ -n "$disk_status_json" ] && [ "$disk_status_json" != "null" ]; then
+                                    while IFS='|' read -r lh_disk_id; do
+                                        [ -z "$lh_disk_id" ] && continue
+                                        local lh_disk_path
+                                        lh_disk_path=$(echo "$disk_status_json" | jq -r ".\"$lh_disk_id\".diskPath // empty")
+                                        if [ -n "$lh_disk_path" ] && [ "$lh_disk_path" != "null" ]; then
+                                            local lh_ssd_num
+                                            lh_ssd_num=$(echo "$lh_disk_path" | sed 's|/var/mnt/ssd-||' | grep -o '^[0-9]*' || echo "")
+                                            if [ "$ssd_num" = "$lh_ssd_num" ]; then
+                                                disk_in_lh=true
+                                                break
+                                            fi
+                                        fi
+                                    done < <(echo "$disk_status_json" | jq -r 'to_entries[] | .key' 2>/dev/null)
+                                fi
+                            fi
+                            if [ "$disk_in_lh" = true ]; then
+                                skip=true
+                                break
+                            fi
+                        fi
+                    fi
+                done
+            fi
+            if [ "$skip" = "false" ]; then
+                available_disks_json=$(echo "$available_disks_json" | jq --arg dp "$dev_path" --arg sz "$size" --arg ps "$pretty_size" --arg bi "$by_id" --arg dn "$disk_name" '. += [{"dev_path": $dp, "size": $sz, "pretty_size": $ps, "by_id": $bi, "disk_name": $dn}]')
+            fi
+        fi
+    done < <(echo "$disks_json" | jq -c 'select(.spec.bus_path != "/virtual")')
+
+    local disk_count
+    disk_count=$(echo "$available_disks_json" | jq 'length')
+    if [ "$disk_count" = "0" ]; then
+        echo -e "\033[33mInga tillgängliga diskar hittades på $selected_node\033[0m"
+        echo "Alla diskar är redan konfigurerade."
+        return 0
+    fi
+
+    if [ "$disk_count" -gt 1 ]; then
+        echo -e "\033[34m=== Tillgängliga diskar på $selected_node ===\033[0m\n"
+        echo "$available_disks_json" | jq -r '.[] | "  \(.disk_name) (\(.pretty_size))\n    by-id: \(.by_id)\n    dev_path: \(.dev_path)\n"' | head -50
+        echo ""
+        echo -n "Ange dev_path för disken du vill lägga till: "
+        read -r chosen_path
+    else
+        chosen_path=$(echo "$available_disks_json" | jq -r '.[0].dev_path')
+    fi
+
+    local chosen_disk
+    chosen_disk=$(echo "$available_disks_json" | jq --arg dp "$chosen_path" '.[] | select(.dev_path == $dp)')
+    if [ -z "$chosen_disk" ] || [ "$chosen_disk" = "null" ]; then
+        echo -e "\033[31m❌ okänd disk: $chosen_path\033[0m"
+        return 1
+    fi
+
+    local by_id dev_path pretty_size
+    by_id=$(echo "$chosen_disk" | jq -r '.by_id')
+    dev_path=$(echo "$chosen_disk" | jq -r '.dev_path')
+    pretty_size=$(echo "$chosen_disk" | jq -r '.pretty_size')
+
+    local existing_ssd_names
+    existing_ssd_names=$(echo "$configured_volumes" | tr ' ' '\n' | grep '^ssd-' | sed 's/ssd-//' | sort -n)
+    local next_num=1
+    if [ -n "$existing_ssd_names" ]; then
+        next_num=$(echo "$existing_ssd_names" | tail -1 | awk '{print $1 + 1}')
+    fi
+    local new_volume_name="ssd-$next_num"
+
+    echo ""
+    echo -e "\033[34mDisk som kommer läggas till:\033[0m"
+    echo "  Dev path:   $dev_path"
+    echo "  Storlek:    $pretty_size"
+    echo "  By-id:      $by_id"
+    echo "  Namn:       $new_volume_name"
+
+    local fs_type
+    fs_type=$(talosctl get disks -n "$ip" -o json 2>/dev/null | jq --arg dp "$dev_path" '.items[] | select(.spec.dev_path == $dp) | .spec.filesystem // empty' 2>/dev/null | tr -d '"')
+    if [ -z "$fs_type" ] || [ "$fs_type" = "null" ] || [ "$fs_type" = "gpt" ]; then
+        echo ""
+        echo -e "\033[33m⚠️  VARNING: Disken verkar inte ha XFS-format!\033[0m"
+        echo "  Disken har antingen ingen filesystem eller GPT-partitionstabell."
+        echo "  För att använda den i Longhorn behöver du först formatera den:"
+        echo ""
+        echo "    sudo mkfs.xfs -f $dev_path"
+        echo ""
+        echo -e "\033[31m❌ UPPLYSNING: Du måste formatera disken INNAN du lägger till den i Longhorn.\033[0m"
+        echo "  Annars kommer Talos att misslyckas med: 'filesystem type mismatch: gpt != xfs'"
+        echo ""
+        echo -n "Vill du lägga till disken ändå och formatera den senare? [j/n]: "
+        read -r confirm
+        if [ "$confirm" != "j" ] && [ "$confirm" != "J" ]; then
+            echo "Avbrutet."
+            return 0
+        fi
+    fi
+
+    echo ""
+    echo -n "Vill du lägga till denna disk i Longhorn? [j/n]: "
+    read -r confirm
+    if [ "$confirm" != "j" ] && [ "$confirm" != "J" ]; then
+        echo "Avbrutet."
+        return 0
+    fi
+
+    local new_volume_config="---
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: $new_volume_name
+volumeType: disk
+provisioning:
+  diskSelector:
+    match: \"'/dev/disk/by-id/$by_id' in disk.symlinks\""
+
+    if grep -q "^---$" "$patch_file"; then
+        printf '\n%s\n' "$new_volume_config" >> "$patch_file"
+    else
+        printf '%s\n' "$new_volume_config" >> "$patch_file"
+    fi
+
+    echo ""
+    echo -e "\033[32m✓ $new_volume_name har lagts till i patch-filen.\033[0m"
+
+    echo ""
+    echo -e "\033[34mLägger till disk i Longhorn via API...\033[0m"
+
+    local disk_num
+    disk_num=$(echo "$new_volume_name" | sed 's/ssd-//')
+
+    local ssd_path="/var/mnt/$new_volume_name"
+    local phys_disk=""
+    case "$dev_path" in
+        */sda) phys_disk="sda" ;;
+        */sdb) phys_disk="sdb" ;;
+        */sdc) phys_disk="sdc" ;;
+        *) echo "  ⚠️ Kan inte avgöra fysisk disk för $dev_path"
+    esac
+
+    if [ -n "$phys_disk" ]; then
+        local disk_uuid
+        disk_uuid=$(blkid -s UUID -o value "$dev_path" 2>/dev/null || echo "")
+
+        local lh_disk_name="disk-$disk_num"
+        if [ "$disk_num" = "1" ]; then
+            lh_disk_name="default-disk-b30600000000"
+        fi
+        if [ "$disk_num" -gt 1 ]; then
+            lh_disk_name="disk-$((disk_num + 1))"
+        fi
+
+        echo "  Disk-nummer: $disk_num"
+        echo "  Longhorn disk: $lh_disk_name"
+        echo "  Sökväg: $ssd_path"
+        echo "  Fysisk: /dev/$phys_disk"
+        echo "  UUID: $disk_uuid"
+
+        kubectl patch nodes.longhorn.io "$selected_node" -n longhorn-system --type='json' \
+            -p "[{\"op\":\"add\",\"path\":\"/spec/disks/$lh_disk_name\",\"value\":{\"allowScheduling\":true,\"diskDriver\":\"\",\"diskType\":\"filesystem\",\"evictionRequested\":false,\"path\":\"$ssd_path\",\"storageReserved\":0,\"tags\":[]}}]" 2>/dev/null
+
+        echo "  ✓ Longhorn spec uppdaterad"
+
+        sleep 2
+
+        local im_pod
+        im_pod=$(kubectl get pods -n longhorn-system -o json | jq -r ".items[] | select(.metadata.name | contains(\"instance-manager\")) | select(.spec.nodeName == \"$selected_node\") | .metadata.name" 2>/dev/null | head -1)
+
+        if [ -n "$im_pod" ] && [ -n "$disk_uuid" ]; then
+            kubectl exec -n longhorn-system "$im_pod" -- sh -c "echo '{\"diskName\":\"$lh_disk_name\",\"diskUUID\":\"$disk_uuid\",\"diskDriver\":\"\"}' > /host$ssd_path/longhorn-disk.cfg" 2>/dev/null
+            echo "  ✓ longhorn-disk.cfg skriven till /host$ssd_path/"
+        elif [ -n "$im_pod" ]; then
+            echo "  ⚠️ Kunde inte hämta UUID för longhorn-disk.cfg"
+        fi
+    fi
+
+    echo ""
+    echo "För att tillämpa ändringen, kör:"
+    echo "  simon talos update config $selected_node"
+}
+
+main_kubernetes_longhorn_repair() {
+    local selected_node="$1"
+    local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
+
+    if [ -z "$selected_node" ]; then
+        echo -e "\033[34mTillgängliga noder med Longhorn-problem:\033[0m"
+        kubectl get nodes.longhorn.io -n longhorn-system -o json | jq -r '.items[] | select(.status.conditions[] | select(.type == "Ready" and .status == "False")) | .metadata.name' | while read -r node; do
+            local lh_node
+            lh_node=$(kubectl get nodes.longhorn.io "$node" -n longhorn-system -o json 2>/dev/null)
+            local disk_id reason
+            disk_id=$(echo "$lh_node" | jq -r '.status.diskStatus | to_entries[0].key')
+            reason=$(echo "$lh_node" | jq -r '.status.diskStatus | to_entries[0].value.conditions[] | select(.status == "False") | .message' | head -1)
+            echo "  - $node"
+            echo "    Disk: $disk_id"
+            if echo "$reason" | grep -q "diskUUID"; then
+                echo -e "    \033[31mProblem: diskUUID mismatch\033[0m"
+            else
+                echo "    Orsak: $reason"
+            fi
+        done
+        echo ""
+        echo -n "Ange nodnamn att reparera: "
+        read -r selected_node
+    fi
+
+    if [ -z "$selected_node" ]; then
+        echo -e "\033[31m❌ inget nodnamn angivet\033[0m"
+        return 1
+    fi
+
+    local ip
+    ip=$(yq -r ".nodes[] | select(.name == \"$selected_node\") | .ip" "$nodes_yaml" 2>/dev/null)
+    if [ -z "$ip" ] || [ "$ip" = "null" ]; then
+        echo -e "\033[31m❌ IP not found for node: $selected_node\033[0m"
+        return 1
+    fi
+
+    echo -e "\033[34m=== Reparera Longhorn disk på $selected_node ($ip) ===\033[0m\n"
+
+    local lh_node_json
+    lh_node_json=$(kubectl get nodes.longhorn.io "$selected_node" -n longhorn-system -o json 2>/dev/null)
+
+    if [ -z "$lh_node_json" ] || echo "$lh_node_json" | jq -s 'length == 0' 2>/dev/null | grep -q "true"; then
+        echo -e "\033[31m❌ Longhorn-node hittades inte: $selected_node\033[0m"
+        return 1
+    fi
+
+    local disk_status_json
+    disk_status_json=$(echo "$lh_node_json" | jq -r '.status.diskStatus')
+
+    if [ -z "$disk_status_json" ] || [ "$disk_status_json" = "null" ]; then
+        echo -e "\033[31m❌ Inga diskar hittades på $selected_node\033[0m"
+        return 1
+    fi
+
+    local disk_id disk_uuid disk_path
+    disk_id=$(echo "$disk_status_json" | jq -r 'to_entries[0].key')
+    disk_uuid=$(echo "$disk_status_json" | jq -r 'to_entries[0].value.diskUUID')
+    disk_path=$(echo "$disk_status_json" | jq -r 'to_entries[0].value.diskPath')
+
+    if [ -z "$disk_id" ] || [ "$disk_id" = "null" ]; then
+        echo -e "\033[31m❌ Kunde inte hämta disk-information\033[0m"
+        return 1
+    fi
+
+    local disk_name
+    disk_name=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskName // \"$disk_id\"")
+
+    local disk_driver
+    disk_driver=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".diskDriver // \"\"")
+
+    local expected_uuid="$disk_uuid"
+    local disk_config_json="{\"diskName\":\"$disk_name\",\"diskUUID\":\"$expected_uuid\",\"diskDriver\":\"$disk_driver\"}"
+
+    echo "Hittade disk:"
+    echo "  Disk ID:   $disk_id"
+    echo "  diskUUID:  $disk_uuid"
+    echo "  Sökväg:    $disk_path"
+    echo "  Disk config: $disk_config_json"
+    echo ""
+
+    local conditions_json ready_status schedulable_status
+    conditions_json=$(echo "$disk_status_json" | jq -r ".\"$disk_id\".conditions // []")
+    ready_status=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Ready") | .status')
+    schedulable_status=$(echo "$conditions_json" | jq -r '.[] | select(.type == "Schedulable") | .status')
+    local reason
+    reason=$(echo "$conditions_json" | jq -r '.[] | select(.status == "False") | .message' | head -1)
+
+    if [ "$ready_status" != "False" ] && [ "$schedulable_status" != "False" ]; then
+        echo -e "\033[32m✓ Disken fungerar redan, inget att reparera\033[0m"
+        return 0
+    fi
+
+    if ! echo "$reason" | grep -q "diskUUID"; then
+        echo -e "\033[33m⚠️  Varning: Detta script reparerar endast diskUUID-mismatch\033[0m"
+        echo "  Aktuellt problem: $reason"
+        echo ""
+        echo -n "Fortsätt ändå? [j/n]: "
+        read -r confirm
+        if [ "$confirm" != "j" ] && [ "$confirm" != "J" ]; then
+            echo "Avbrutet."
+            return 0
+        fi
+    fi
+
+    echo -e "\033[34mSteg 1: Hämta UUID från Longhorn-node\033[0m"
+    echo "  Förväntad UUID: $expected_uuid"
+
+    echo -e "\033[34mSteg 2: Hämta fysisk disk\033[0m"
+    local ssd_num
+    ssd_num=$(echo "$disk_path" | sed 's|/var/mnt/ssd-||' | grep -o '^[0-9]*' || true)
+    if [ -z "$ssd_num" ]; then
+        ssd_num=$(echo "$disk_id" | sed 's/disk-//' | grep -o '^[0-9]*' || true)
+    fi
+
+    local phys_disk=""
+    if [ "$ssd_num" = "1" ]; then
+        phys_disk="sda"
+    elif [ "$ssd_num" = "2" ]; then
+        phys_disk="sdb"
+    elif [ "$ssd_num" = "3" ]; then
+        phys_disk="sdc"
+    fi
+
+    if [ -z "$phys_disk" ]; then
+        echo -e "\033[31m❌ Kunde inte avgöra fysisk disk från sökväg/disk-id\033[0m"
+        return 1
+    fi
+
+    echo "  Fysisk disk: /dev/$phys_disk"
+
+    echo -e "\033[34mSteg 3: Kontrollera att disken finns\033[0m"
+    local disk_exists=false
+    if talosctl get dv -n "$ip" 2>/dev/null | grep -q "$phys_disk\s"; then
+        disk_exists=true
+    fi
+
+    if [ "$disk_exists" = false ]; then
+        echo -e "\033[31m❌ Disken /dev/$phys_disk finns inte på noden\033[0m"
+        return 1
+    fi
+
+    echo -e "\033[34mSteg 4: Skriv longhorn-disk.cfg till disken (JSON-format)\033[0m"
+    echo "  Kommando: echo '$disk_config_json' > $disk_path/longhorn-disk.cfg"
+
+    local im_pod
+    im_pod=$(kubectl get pods -n longhorn-system -o json | jq -r ".items[] | select(.metadata.name | contains(\"instance-manager\")) | select(.spec.nodeName == \"$selected_node\") | .metadata.name" 2>/dev/null | head -1)
+
+    if [ -z "$im_pod" ]; then
+        echo -e "\033[31m❌ Kunde inte hitta instance-manager pod för $selected_node\033[0m"
+        return 1
+    fi
+
+    kubectl exec -n longhorn-system "$im_pod" -- sh -c "echo '$disk_config_json' > /host$disk_path/longhorn-disk.cfg" 2>&1
+    local exec_result=$?
+
+    if [ $exec_result -ne 0 ]; then
+        echo -e "\033[31m❌ Kunde inte skriva till disken\033[0m"
+        echo "  Försökte: echo '$disk_config_json' > '/host$disk_path/longhorn-disk.cfg'"
+        return 1
+    fi
+
+    echo -e "\033[32m✓ Skrev till $im_pod\033[0m"
+
+    echo -e "\033[34mSteg 5: Verifiera skrivning\033[0m"
+    local written_content
+    written_content=$(kubectl exec -n longhorn-system "$im_pod" -- cat "/host$disk_path/longhorn-disk.cfg" 2>/dev/null)
+
+    if echo "$written_content" | jq -e '.diskUUID' >/dev/null 2>&1; then
+        local verified_uuid
+        verified_uuid=$(echo "$written_content" | jq -r '.diskUUID')
+        if [ "$verified_uuid" != "$expected_uuid" ]; then
+            echo -e "\033[31m❌ Verifiering misslyckades!\033[0m"
+            echo "  Förväntad UUID: $expected_uuid"
+            echo "  Skriven UUID:   $verified_uuid"
+            return 1
+        fi
+    else
+        echo -e "\033[31m❌ Verifiering misslyckades - inte giltigt JSON\033[0m"
+        echo "  Skriven innehåll: $written_content"
+        return 1
+    fi
+
+    echo -e "\033[32m✓ longhorn-disk.cfg skriven korrekt\033[0m"
+
+    echo ""
+    echo -e "\033[34mSteg 6: Vänta på Longhorn att upptäcka ändringen\033[0m"
+    echo "  Longhorn kontrollerar disk-UUID regelbundet. Detta kan ta upp till 2 minuter."
+    echo ""
+    echo "  För att verifiera, kör:"
+    echo "    simon kubernetes longhorn test $selected_node"
+    echo ""
+    echo -e "\033[32m✓ Reparation slutförd\033[0m"
+    echo ""
+    echo "  OBS: Om Longhorn fortfarande rapporterar mismatch efter några minuter,"
+    echo "  kan du behöva starta about Longhorn-manager poddar på noden:"
+    echo "    kubectl delete pod -n longhorn-system -l app=longhorn-manager --field-selector spec.nodeName=$selected_node"
 }

@@ -196,9 +196,8 @@ def "main talos health" [] {
   let workers = open /home/simon/repos/infrastructure/talos/nodes.yaml | get nodes | where role == "worker" | get ip | str join ','
   print $controlplanes
   print $workers
-  # Kör talosctl health-kommandot
-  # talosctl health --control-plane-nodes ($controlplanes) --worker-nodes ($workers)
-  talosctl health -n 10.10.10.10
+  # Kör talosctl health-kommandot med do -i för direkt output
+  sh -c "talosctl health -n 10.10.10.10"
 
 }
 

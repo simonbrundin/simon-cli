@@ -123,9 +123,8 @@ main() {
                     "deleting") main_kubernetes_deleting ;;
                     "terminating") main_kubernetes_terminating ;;
                     "remove selected") main_kubernetes_remove_selected ;;
-                    "longhorn test"*) shift 3; main_kubernetes_longhorn_test "$@" ;;
-                    "longhorn add disk"*) shift 4; main_kubernetes_longhorn_add_disk "$@" ;;
-                    "longhorn repair"*) shift 3; main_kubernetes_longhorn_repair "$@" ;;
+                    "longhorn add"*) shift 3; main_kubernetes_longhorn_add_disk "$@" ;;
+                    "longhorn test") shift 3; main_kubernetes_longhorn_test "$@" ;;
                     "install argocd") main_kubernetes_install_argocd ;;
                     "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
@@ -478,9 +477,8 @@ show_help() {
     echo "  kubernetes deleting"
     echo "  kubernetes terminating"
     echo "  kubernetes remove selected"
-    echo "  kubernetes longhorn test"
     echo "  kubernetes longhorn add disk"
-    echo "  kubernetes longhorn repair"
+    echo "  kubernetes longhorn test"
     echo "  kubernetes install argocd"
     echo ""
     echo "Cluster commands:"
@@ -602,7 +600,6 @@ else
             kubernetes)
                 arg="$2"
                 if [ -n "$3" ]; then arg="$arg $3"; fi
-                if [ -n "$4" ]; then arg="$arg $4"; fi
                 case "$arg" in
                     "login certificate") main_kubernetes_login_certificate ;;
                     "login teleport") main_kubernetes_login_teleport ;;
@@ -614,9 +611,7 @@ else
                     "deleting") main_kubernetes_deleting ;;
                     "terminating") main_kubernetes_terminating ;;
                     "remove selected") main_kubernetes_remove_selected ;;
-                    "longhorn test"*) shift 3; main_kubernetes_longhorn_test "$@" ;;
-                    "longhorn add disk"*) shift 4; main_kubernetes_longhorn_add_disk "$@" ;;
-                    "longhorn repair"*) shift 3; main_kubernetes_longhorn_repair "$@" ;;
+                    "longhorn test") shift 3; main_kubernetes_longhorn_test "$@" ;;
                     "install argocd") main_kubernetes_install_argocd ;;
                     "versions") main_kubernetes_versions ;;
                     *) echo "Unknown kubernetes command: $arg" ;;
