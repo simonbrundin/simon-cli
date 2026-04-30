@@ -327,6 +327,28 @@ main_new_repo() {
         echo "Usage: simon new repo <name>"
         return
     fi
+
+    unset GITHUB_TOKEN
+
+    if ! gh auth status &>/dev/null; then
+        echo "❌ Inte inloggad på GitHub. Kör 'gh auth login'"
+        return 1
+    fi
+
+    local has_repo_scope
+    has_repo_scope=$(gh auth status 2>/dev/null | grep -o "repo" | head -1)
+
+    if [ -z "$has_repo_scope" ]; then
+        echo "❌ Aktivt GitHub-konto saknar 'repo'-rättigheter."
+        echo "Försöker byta till konto med rättigheter..."
+        if gh auth switch &>/dev/null; then
+            echo "✅ Bytt till konto med rätt scopes"
+        else
+            echo "❌ Kunde inte byta konto. Kör 'gh auth logout' och logga in på nytt."
+            return 1
+        fi
+    fi
+
     repo_path="$HOME/repos/$name"
 
     mkdir -p "$repo_path"
@@ -340,9 +362,11 @@ main_new_repo() {
     git add .
     git commit -m "Initial commit"
 
-    gh repo create "$name" --public --remote=origin --source="$repo_path" --push
-
-    git push -u origin main
+    if ! gh repo create "$name" --public --remote=origin --source="$repo_path" --push 2>&1; then
+        echo "❌ Misslyckades att skapa GitHub-repo"
+        rm -rf "$repo_path"
+        return 1
+    fi
 
     echo "Repo $name skapat i $repo_path och pushat till GitHub!"
 }
@@ -579,6 +603,7 @@ else
             speed) main_speed ;;
             whois) main_whois ;;
             reboot) main_reboot ;;
+            push) main_push ;;
             edit)
                 case "$2" in
                     cron) main_edit_cron ;;
