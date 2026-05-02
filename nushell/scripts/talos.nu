@@ -130,8 +130,18 @@ def "main talos update config" [nodnamn?: string] {
       "--config-patch=@patches/all.yaml"
     ]
 
+    # För worker noder, applicera UserVolumeConfigs separat från disks/-mappen
     if $node.role == "worker" {
-      $base_cmd = ($base_cmd | append $"--config-patch-worker=@patches/disks/($node.name).yaml")
+      let disk_dir = $"patches/workers/($node.name)/disks"
+      if ($disk_dir | path exists) {
+        let disk_files = (ls $disk_dir | where type == file | get name)
+        for $disk_file in $disk_files {
+          let disk_name = ($disk_file | path parse | get stem)
+          print $"📝 Applicerar UserVolumeConfig: ($disk_name)"
+          mut uvc_cmd = ["talosctl" "--talosconfig" "talosconfig" "patch" "machineconfig" "--nodes" $node.ip "--patch" $"@($disk_file)" "--mode" "no-reboot"]
+          run-external ...$uvc_cmd
+        }
+      }
     }
 
     # Lägg till nodspecifika patchar om de finns
@@ -169,6 +179,23 @@ def "main talos update config" [nodnamn?: string] {
       # talosctl --talosconfig generated/talosconfig apply-config --nodes $node.ip --file $config_file --endpoints $endpoint
       talosctl --talosconfig talosconfig apply-config --nodes $node.ip --file $config_file
       print "klart"
+      
+      # Applicera machine config patch för initierade noder (ny struktur: patches/workers/<nod>/patch.yaml)
+      if $node.role == "worker" {
+        let patch_file = $"patches/workers/($node.name)/patch.yaml"
+        if ($patch_file | path exists) {
+          print $"📝 Applicerar machine config patch: ($patch_file)"
+          mut patch_cmd = ["talosctl" "--talosconfig" "talosconfig" "patch" "machineconfig" "--nodes" $node.ip "--patch" $"@($patch_file)" "--mode" "no-reboot"]
+          run-external ...$patch_cmd
+        }
+      } else if $node.role == "controlplane" {
+        let patch_file = $"patches/controlplanes/($node.name).yaml"
+        if ($patch_file | path exists) {
+          print $"📝 Applicerar machine config patch: ($patch_file)"
+          mut patch_cmd = ["talosctl" "--talosconfig" "talosconfig" "patch" "machineconfig" "--nodes" $node.ip "--patch" $"@($patch_file)" "--mode" "no-reboot"]
+          run-external ...$patch_cmd
+        }
+      }
     }
 
     # Namnge noden

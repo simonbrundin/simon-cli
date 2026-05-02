@@ -50,16 +50,17 @@ main_talos_upgrade() {
     echo -e "\033[34mVilka noder vill du uppdatera?\033[0m"
     selectedNodes=$(fzfSelect "$nodes")
     selectedNodesString=$(echo "$selectedNodes" | tr ' ' ',')
-    schematicID=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"talos-id\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
+    schematicID=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"talos-schematic-id\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
+    arch=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"arch\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
 
     if [ -z "$schematicID" ]; then
-        echo "❌ Fel: Kunde inte hämta talos-id för nod $selectedNodesString"
+        echo "❌ Fel: Kunde inte hämta talos-schematic-id för nod $selectedNodesString"
         echo "   Kontrollera att noden finns i nodes.yaml"
         return 1
     fi
 
-    echo "🔧 Uppgraderar nod $selectedNodesString med talos-id: $schematicID"
-    echo "talosctl upgrade --image factory.talos.dev/installer/$schematicID:$selectedVersion -n $selectedNodesString"
+    echo "🔧 Uppgraderar nod $selectedNodesString med schematic: $schematicID"
+    echo "🔗 https://factory.talos.dev/image/$schematicID/$selectedVersion/metal-$arch.raw.xz"
     talosctl upgrade --image "factory.talos.dev/installer/$schematicID:$selectedVersion" -n "$selectedNodesString"
 }
 
@@ -217,13 +218,14 @@ main_talos_update_config() {
             node_initialized=true
         fi
 
-        # Hämta talos-id för extensions
-        local talos_id schematic_id
-        talos_id=$(yq ".nodes[] | select(.name == \"$node_name\") | .\"talos-id\"" nodes.yaml 2>/dev/null | tr -d '"')
+        # Hämta talos-schematic-id för extensions
+        local talos_schematic_id arch
+        talos_schematic_id=$(yq ".nodes[] | select(.name == \"$node_name\") | .\"talos-schematic-id\"" nodes.yaml 2>/dev/null | tr -d '"')
+        arch=$(yq ".nodes[] | select(.name == \"$node_name\") | .\"arch\"" nodes.yaml 2>/dev/null | tr -d '"')
         
-        # Applicera extensions via upgrade om talos-id finns
+        # Applicera extensions via upgrade om talos-schematic-id finns
         local node_needs_extension_upgrade=false
-        if [ -n "$talos_id" ] && [ "$talos_id" != "null" ]; then
+        if [ -n "$talos_schematic_id" ] && [ "$talos_schematic_id" != "null" ]; then
             # Kontrollera om extensions redan är installerade
             local current_extensions
             current_extensions=$(talosctl --talosconfig talosconfig get extensions -n "$node_ip" -o json 2>/dev/null | jq -r 'length' || echo "0")
@@ -243,20 +245,20 @@ main_talos_update_config() {
             fi
 
             # Applicera UserVolumeConfigs separat (Talos stödjer inte multi-doc patch)
-            if [ -f "patches/nodes/$node_name.yaml" ]; then
-                volume_count=$(yq -s '.[] | select(.kind == "UserVolumeConfig") | "x"' "patches/nodes/$node_name.yaml" 2>/dev/null | grep -c 'x' || echo "0")
+            # Kolla i ny struktur: patches/workers/<nod>/disks/*.yaml
+            local disk_dir="patches/workers/$node_name/disks"
+            if [ -d "$disk_dir" ]; then
+                volume_count=$(find "$disk_dir" -name "*.yaml" 2>/dev/null | wc -l | tr -d ' ')
                 if [ "$volume_count" -gt 0 ]; then
-                    echo "📝 Applicerar UserVolumeConfigs..."
-                    echo "Hittade $volume_count UserVolumeConfig(s) i patch..."
+                    echo "📝 Applicerar UserVolumeConfigs från $disk_dir..."
 
                     applied=0
                     failed=0
-                    for i in $(seq 0 $((volume_count - 1))); do
-                        volume_doc=$(yq -s ".[$i]" "patches/nodes/$node_name.yaml" 2>/dev/null)
-                        volume_name=$(echo "$volume_doc" | yq -r '.name' 2>/dev/null)
+                    for volume_file in "$disk_dir"/*.yaml; do
+                        volume_name=$(yq -r '.name' "$volume_file" 2>/dev/null)
 
                         if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
-                            --patch <(echo "$volume_doc") --mode no-reboot 2>/dev/null; then
+                            --patch "@$volume_file" --mode no-reboot 2>/dev/null; then
                             echo "  ✅ $volume_name applicerad"
                             applied=$((applied + 1))
                         else
@@ -296,9 +298,10 @@ main_talos_update_config() {
             fi
 
             # Installera extensions om de inte redan finns
-            if [ "$node_needs_extension_upgrade" = true ] && [ -n "$talos_id" ] && [ "$talos_id" != "null" ]; then
+            if [ "$node_needs_extension_upgrade" = true ] && [ -n "$talos_schematic_id" ] && [ "$talos_schematic_id" != "null" ]; then
                 echo "📝 Installerar extensions via upgrade..."
-                echo "  Installerar med talos-id: $talos_id"
+                echo "  Installerar med schematic: $talos_schematic_id"
+                echo "🔗 https://factory.talos.dev/image/${talos_schematic_id}/${talos_version}/metal-${arch}.raw.xz"
                 
                 # Hämta aktuell Talos-version med v-prefix
                 local talos_version
@@ -310,8 +313,8 @@ main_talos_update_config() {
                 
                 echo "  Talos version: $talos_version"
                 
-                if talosctl upgrade --image "factory.talos.dev/installer/$talos_id:$talos_version" -n "$node_ip" --wait --timeout 10m 2>&1; then
-                    echo "  ✅ Extensions installerade (Talos upgrade med schematic $talos_id)"
+                if talosctl upgrade --image "factory.talos.dev/installer/$talos_schematic_id:$talos_version" -n "$node_ip" --wait --timeout 10m 2>&1; then
+                    echo "  ✅ Extensions installerade (Talos upgrade med schematic $talos_schematic_id)"
                 else
                     echo "  ⚠️ Upgrade misslyckades med version $talos_version"
                 fi
@@ -378,7 +381,7 @@ main_talos_update_config() {
 
             echo "✅ Konfiguration applicerad med hostname $node_name!"
             echo "ℹ️  Noden startas om och hostname kommer att sättas."
-            yq -i -y ".nodes[] |= select(.name == \"$node_name\").initialized = true" nodes.yaml
+            yq -i ".nodes[] |= select(.name == \"$node_name\") | .initialized = true" nodes.yaml
         else
             echo "❌ Kunde inte applicera konfiguration"
         fi
