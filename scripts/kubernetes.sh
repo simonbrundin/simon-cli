@@ -875,7 +875,7 @@ main_kubernetes_longhorn_test() {
 }
 
 main_kubernetes_iscsi_health() {
-    echo -e "\n\033[34m7. Talos Services...\033[0m"
+    echo -e "\n\033[34mTalos Services...\033[0m"
 
     local nodes_yaml="$HOME/repos/infrastructure/talos/nodes.yaml"
     local nodes_with_volumes="worker-1 worker-2 worker-3 worker-4 worker-5 worker-6 worker-7 worker-8"
@@ -960,7 +960,7 @@ main_kubernetes_health() {
     echo ""
 
     local required_commands=("ping" "talosctl" "kubectl" "yq")
-    echo -e "\033[34m0. Kontrollerar required tools...\033[0m"
+    echo -e "\033[34mKontrollerar required tools...\033[0m"
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             handle_health_error "$cmd not found"
@@ -980,7 +980,7 @@ main_kubernetes_health() {
 
     local continue_after_argocd=1
 
-    echo -e "\n\033[34m1. PING NODER...\033[0m"
+    echo -e "\033[34mPING NODER...\033[0m"
 
     local controlplane_ips worker_ips
     controlplane_ips=$(yq -r '.nodes[] | select(.role == "controlplane") | .ip' "$nodes_yaml")
@@ -1027,7 +1027,7 @@ main_kubernetes_health() {
 
     local talos_node="10.10.10.11"
 
-    echo -e "\n\033[34m2. talosctl health...\033[0m"
+    echo -e "\n\033[34mtalosctl health...\033[0m"
     local talos_output
     talos_output=$(talosctl health --nodes "$talos_node" 2>&1)
     if [ $? -ne 0 ]; then
@@ -1049,7 +1049,7 @@ main_kubernetes_health() {
         return 1
     fi
 
-    echo -e "\n\033[34m5. kubectl get nodes...\033[0m"
+    echo -e "\n\033[34mkubectl get nodes...\033[0m"
     kubectl get nodes | while IFS= read -r line; do
         if echo "$line" | grep -q "Ready"; then
             echo -e "\033[32m✓ $line\033[0m"
@@ -1058,7 +1058,7 @@ main_kubernetes_health() {
         fi
     done
 
-    echo -e "\n\033[34m6. ArgoCD pods...\033[0m"
+    echo -e "\n\033[34mArgoCD pods...\033[0m"
     local green=$'\033[32m'
     local red=$'\033[31m'
     local reset=$'\033[0m'
@@ -1076,7 +1076,31 @@ main_kubernetes_health() {
         continue_after_argocd=0
     fi
 
-    echo -e "\n\033[34m6.5. Pending CSR...\033[0m"
+    echo -e "\n\033[34mArgoCD sync status...\033[0m"
+    local argocd_sync_errors=0
+    while IFS= read -r app_line; do
+        local app_name sync_status health_status
+        app_name=$(echo "$app_line" | awk '{print $1}')
+        sync_status=$(echo "$app_line" | awk '{print $2}')
+        health_status=$(echo "$app_line" | awk '{print $3}')
+
+        if [ "$sync_status" = "Synced" ] && [ "$health_status" = "Healthy" ]; then
+            echo -e "  ${green}✓ $app_name: $sync_status/$health_status${reset}"
+        else
+            echo -e "  ${red}✗ $app_name: $sync_status/$health_status${reset}"
+            argocd_sync_errors=$((argocd_sync_errors + 1))
+        fi
+    done < <(argocd app list -o name 2>/dev/null | while IFS= read -r app; do
+        local sync health
+        sync=$(argocd app get "$app" -o jsonpath='{.status.sync.status}' 2>/dev/null)
+        health=$(argocd app get "$app" -o jsonpath='{.status.health.status}' 2>/dev/null)
+        echo "$app $sync $health"
+    done || echo "argocd cli not configured")
+    if [ "$argocd_sync_errors" -gt 0 ]; then
+        handle_health_error "Det finns $argocd_sync_errors ArgoCD-appar som inte är Synced/Healthy"
+    fi
+
+    echo -e "\n\033[34mPending CSR...\033[0m"
     local pending_csrs
     pending_csrs=$(kubectl get csr --no-headers 2>/dev/null | grep "Pending" | wc -l)
 
@@ -1087,31 +1111,80 @@ main_kubernetes_health() {
         echo -e "\033[32m  ✓ Inga pending CSR\033[0m"
     fi
 
-    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
-        return 1
+    echo -e "\n\033[34mKubelet CSR Approver...\033[0m"
+    local kubelet_ns="kubelet-csr-approver"
+    local kubelet_pods_error=0
+
+    if kubectl get deployment kubelet-csr-approver -n "$kubelet_ns" >/dev/null 2>&1; then
+        local desired ready
+        desired=$(kubectl get deployment kubelet-csr-approver -n "$kubelet_ns" -o jsonpath='{.spec.replicas}' 2>/dev/null)
+        [ -z "$desired" ] && desired=1
+        ready=$(kubectl get deployment kubelet-csr-approver -n "$kubelet_ns" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+        [ -z "$ready" ] && ready=0
+        if [ "$ready" -ge "$desired" ] 2>/dev/null; then
+            echo -e "  ${green}✓ Deployment ready ($ready/$desired replicas)${reset}"
+        else
+            echo -e "  ${red}✗ Deployment not ready ($ready/$desired replicas)${reset}"
+            kubelet_pods_error=1
+        fi
+    else
+        handle_health_error "Kubelet CSR Approver deployment finns inte"
+        kubelet_pods_error=1
     fi
 
-    echo -e "\n\033[34m7. Longhorn status...\033[0m"
+    if [ $kubelet_pods_error -eq 0 ]; then
+        while IFS= read -r pod_line; do
+            local pod_name ready_status ready running
+            pod_name=$(echo "$pod_line" | awk '{print $1}')
+            ready_status=$(echo "$pod_line" | awk '{print $2}')
+            ready=$(echo "$ready_status" | cut -d'/' -f1)
+            running=$(echo "$ready_status" | cut -d'/' -f2)
+
+            if [[ "$pod_line" == *"Running"* ]] && [ "$ready" -eq "$running" ] 2>/dev/null; then
+                echo -e "  ${green}✓ $pod_name${reset}"
+            else
+                echo -e "  ${red}✗ $pod_line${reset}"
+                kubelet_pods_error=1
+            fi
+        done < <(kubectl get pods -n "$kubelet_ns" --no-headers 2>/dev/null)
+    fi
+
+    if [ $kubelet_pods_error -eq 1 ]; then
+        handle_health_error "Kubelet CSR Approver har problem"
+    fi
+
+    echo -e "\n\033[34mLonghorn status...\033[0m"
     local green=$'\033[32m'
     local red=$'\033[31m'
     local yellow=$'\033[33m'
     local reset=$'\033[0m'
 
-    local volumes
+local volumes
     volumes=$(kubectl get volumes -n longhorn-system --no-headers 2>/dev/null)
-    local healthy degraded faulted unknown detached
-    healthy=$(echo "$volumes" | grep -c "healthy" || echo 0)
-    degraded=$(echo "$volumes" | grep -c "degraded" || echo 0)
-    faulted=$(echo "$volumes" | grep -c "faulted" || echo 0)
-    unknown=$(echo "$volumes" | grep -c "unknown" || echo 0)
-    detached=$(echo "$volumes" | grep -c "detached" || echo 0)
+    local healthy degraded faulted attached detached
+    healthy=$(echo "$volumes" | awk '{print $4}' | grep -c '^healthy$')
+    degraded=$(echo "$volumes" | awk '{print $4}' | grep -c '^degraded$')
+    faulted=$(echo "$volumes" | awk '{print $4}' | grep -c '^faulted$')
+    attached=$(echo "$volumes" | awk '{print $3}' | grep -c '^attached$')
+    detached=$(echo "$volumes" | awk '{print $3}' | grep -c '^detached$')
 
     echo "Volumes:"
     echo -e "  ${green}Healthy: $healthy${reset}"
-    echo -e "  ${yellow}Degraded: $degraded${reset}"
-    echo -e "  ${red}Fault: $faulted${reset}"
-    echo -e "  ${red}Unknown: $unknown${reset}"
-    echo -e "  Detached: $detached"
+    if [ "$degraded" -gt 0 ]; then
+        echo -e "  ${yellow}Degraded: $degraded${reset}"
+    else
+        echo -e "  ${green}Degraded: $degraded${reset}"
+    fi
+    if [ "$faulted" -gt 0 ]; then
+        echo -e "  ${red}Fault: $faulted${reset}"
+    else
+        echo -e "  ${green}Fault: $faulted${reset}"
+    fi
+    if [ "$detached" -gt 0 ]; then
+        echo -e "  ${yellow}Detached: $detached${reset}"
+    else
+        echo -e "  ${green}Detached: $detached${reset}"
+    fi
 
     echo "Nodes:"
     local unschedulable_disks=0
@@ -1145,15 +1218,15 @@ main_kubernetes_health() {
         done
     fi
 
-    if [ "$faulted" -gt 0 ] || [ "$unknown" -gt 0 ] || [ "$unschedulable_disks" -gt 0 ]; then
-        handle_health_error "Det finns problem med Longhorn (faulted=$faulted, unknown=$unknown, unschedulable=$unschedulable_disks)"
+    if [ "$faulted" -gt 0 ] || [ "$detached" -gt 0 ] || [ "$unschedulable_disks" -gt 0 ]; then
+        handle_health_error "Det finns problem med Longhorn (faulted=$faulted, detached=$detached, unschedulable=$unschedulable_disks)"
     fi
 
-    if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
+if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
         return 1
     fi
 
-    echo -e "\n\033[34m8. Vault fullständig health...\033[0m"
+    echo -e "\n\033[34mVault...\033[0m"
 
     local green=$'\033[32m'
     local red=$'\033[31m'
@@ -1224,15 +1297,226 @@ main_kubernetes_health() {
         fi
     fi
 
+if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
+        return 1
+    fi
+
+    echo -e "\n\033[34mCert Manager...\033[0m"
+    local certmanager_error=0
+    local certmanager_ns="cert-manager"
+
+    echo -e "\033[33m  Poddar...\033[0m"
+    while IFS= read -r pod_line; do
+        local pod_name ready_status ready running
+        pod_name=$(echo "$pod_line" | awk '{print $1}')
+        ready_status=$(echo "$pod_line" | awk '{print $2}')
+        ready=$(echo "$ready_status" | cut -d'/' -f1)
+        running=$(echo "$ready_status" | cut -d'/' -f2)
+
+        if [[ "$pod_line" == *"Running"* ]] || [[ "$pod_line" == *"Completed"* ]]; then
+            if [ "$ready" -eq "$running" ] 2>/dev/null; then
+                echo -e "  ${green}✓ $pod_name${reset}"
+            else
+                echo -e "  ${yellow}⚠ $pod_name ($ready_status)${reset}"
+            fi
+        else
+            echo -e "  ${red}✗ $pod_name ($ready_status)${reset}"
+            certmanager_error=1
+        fi
+    done < <(kubectl get pods -n "$certmanager_ns" --no-headers 2>/dev/null)
+
+    echo -e "\033[33m  ClusterIssuers...\033[0m"
+    while IFS= read -r issuer_line; do
+        if [ -z "$issuer_line" ] || [[ "$issuer_line" == NAME* ]]; then
+            continue
+        fi
+        local issuer_name condition
+        issuer_name=$(echo "$issuer_line" | awk '{print $1}')
+        condition=$(echo "$issuer_line" | awk '{print $2}')
+
+        if [ "$condition" = "True" ]; then
+            echo -e "  ${green}✓ $issuer_name: Ready${reset}"
+        else
+            echo -e "  ${red}✗ $issuer_name: $condition${reset}"
+            certmanager_error=1
+        fi
+    done < <(kubectl get clusterissuer 2>/dev/null)
+
+    echo -e "\033[33m  Certificates...\033[0m"
+    local cert_error=0
+    while IFS= read -r cert_line; do
+        if [ -z "$cert_line" ] || [[ "$cert_line" == NAMESPACE* ]]; then
+            continue
+        fi
+        local cert_name namespace ready_condition
+        namespace=$(echo "$cert_line" | awk '{print $1}')
+        cert_name=$(echo "$cert_line" | awk '{print $2}')
+        ready_condition=$(echo "$cert_line" | awk '{print $3}')
+
+        if [ "$ready_condition" = "Ready" ]; then
+            echo -e "  ${green}✓ $namespace/$cert_name: Ready${reset}"
+        else
+            local cert_reason
+            cert_reason=$(kubectl get certificate "$cert_name" -n "$namespace" -o jsonpath='{.status.conditions[0].reason}' 2>/dev/null)
+            echo -e "  ${red}✗ $namespace/$cert_name: $ready_condition ($cert_reason)${reset}"
+            cert_error=1
+        fi
+    done < <(kubectl get certificate --all-namespaces 2>/dev/null)
+    if [ $cert_error -eq 1 ]; then
+        certmanager_error=1
+    fi
+
+    echo -e "\033[33m  Orders (ACME)...\033[0m"
+    local order_error=0
+    local order_count
+    order_count=$(kubectl get orders -n cert-manager 2>/dev/null | wc -l)
+    if [ "$order_count" -gt 1 ]; then
+        while IFS= read -r order_line; do
+            local order_name order_state
+            order_name=$(echo "$order_line" | awk '{print $1}')
+            order_state=$(echo "$order_line" | awk '{print $2}')
+            if [ "$order_state" = "valid" ]; then
+                echo -e "  ${green}✓ $order_name: $order_state${reset}"
+            else
+                echo -e "  ${yellow}⚠ $order_name: $order_state${reset}"
+                order_error=1
+            fi
+        done < <(kubectl get orders -n cert-manager --no-headers 2>/dev/null)
+        if [ $order_error -eq 1 ]; then
+            certmanager_error=1
+        fi
+    else
+        echo -e "  ${green}✓ Inga order (inget cert som behöver ACME)${reset}"
+    fi
+
+    echo -e "\033[33m  Challenges (ACME)...\033[0m"
+    local challenge_error=0
+    local challenge_count
+    challenge_count=$(kubectl get challenges -n cert-manager 2>/dev/null | wc -l)
+    if [ "$challenge_count" -gt 1 ]; then
+        while IFS= read -r challenge_line; do
+            if [ -z "$challenge_line" ] || [[ "$challenge_line" == NAME* ]]; then
+                continue
+            fi
+            local challenge_name challenge_state
+            challenge_name=$(echo "$challenge_line" | awk '{print $1}')
+            challenge_state=$(echo "$challenge_line" | awk '{print $2}')
+            local challenge_reason
+            challenge_reason=$(kubectl get challenges -n cert-manager "$challenge_name" -o jsonpath='{.status.reason}' 2>/dev/null)
+
+            if [ "$challenge_state" = "valid" ] || [ "$challenge_state" = "processing" ]; then
+                echo -e "  ${green}✓ $challenge_name: $challenge_state${reset}"
+            else
+                echo -e "  ${red}✗ $challenge_name: $challenge_state ($challenge_reason)${reset}"
+                challenge_error=1
+            fi
+        done < <(kubectl get challenges -n cert-manager --no-headers 2>/dev/null)
+        if [ $challenge_error -eq 1 ]; then
+            certmanager_error=1
+        fi
+    else
+        echo -e "  ${green}✓ Inga challenges${reset}"
+    fi
+
+    if [ $certmanager_error -eq 1 ]; then
+        handle_health_error "Cert Manager har problem"
+    fi
+
+    echo -e "\n\033[34mExternal Secrets Operator...\033[0m"
+    local eso_ns="external-secrets-operator"
+    local eso_error=0
+
+    echo -e "\033[33m  Poddar...\033[0m"
+    while IFS= read -r pod_line; do
+        if [[ "$pod_line" == *"Running"* ]]; then
+            echo -e "  ${green}✓ $pod_line${reset}"
+        else
+            echo -e "  ${red}✗ $pod_line${reset}"
+            eso_error=1
+        fi
+    done < <(kubectl get pods -n "$eso_ns" --no-headers 2>/dev/null)
+
+    if [ $eso_error -eq 0 ]; then
+        echo -e "\033[33m  ClusterSecretStore 'vault-backend'...\033[0m"
+        local eso_condition
+        eso_condition=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+        if [ "$eso_condition" = "True" ]; then
+            echo -e "  ${green}✓ vault-backend: Ready${reset}"
+        else
+            local eso_reason
+            eso_reason=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
+            echo -e "  ${red}✗ vault-backend: NotReady ($eso_reason)${reset}"
+            eso_error=1
+        fi
+    fi
+
+    if [ $eso_error -eq 1 ]; then
+        handle_health_error "External Secrets Operator har problem"
+    fi
+
     if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
         return 1
+    fi
+
+    echo -e "\n\033[34mEnvoy + Gateway API...\033[0m"
+    local envoy_ns="envoy"
+    local envoy_error=0
+
+    echo -e "\033[33m  Gateway API CRDs...\033[0m"
+    local crds_ok=1
+    for crd in "gatewayclasses.gateway.networking.k8s.io" "gateways.gateway.networking.k8s.io" "httproutes.gateway.networking.k8s.io"; do
+        local crd_status
+        crd_status=$(kubectl get crd "$crd" -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null)
+        if [ "$crd_status" = "True" ]; then
+            echo -e "  ${green}✓ $crd Established${reset}"
+        else
+            echo -e "  ${red}✗ $crd not Established (status: $crd_status)${reset}"
+            crds_ok=0
+        fi
+    done
+    if [ $crds_ok -eq 0 ]; then
+        envoy_error=1
+    fi
+
+    echo -e "\033[33m  GatewayClass...\033[0m"
+    local gwclass_status
+    gwclass_status=$(kubectl get gatewayclass envoy-gateway -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' 2>/dev/null)
+    if [ "$gwclass_status" = "True" ]; then
+        echo -e "  ${green}✓ envoy-gateway: Accepted${reset}"
+    else
+        echo -e "  ${red}✗ envoy-gateway not Accepted (status: $gwclass_status)${reset}"
+        envoy_error=1
+    fi
+
+    echo -e "\033[33m  Gateway 'simons-gateway'...\033[0m"
+    local gw_listeners
+    gw_listeners=$(kubectl get gateway simons-gateway -n "$envoy_ns" -o jsonpath='{.status.listeners[*].conditions[*].status}' 2>/dev/null)
+    if echo "$gw_listeners" | grep -qv "False"; then
+        echo -e "  ${green}✓ All listeners Accepted${reset}"
+    else
+        echo -e "  ${red}✗ Some listeners not Accepted${reset}"
+        envoy_error=1
+    fi
+
+    echo -e "\033[33m  Envoy pods...\033[0m"
+    while IFS= read -r pod_line; do
+        if [[ "$pod_line" == *"Running"* ]]; then
+            echo -e "  ${green}✓ $pod_line${reset}"
+        else
+            echo -e "  ${red}✗ $pod_line${reset}"
+            envoy_error=1
+        fi
+    done < <(kubectl get pods -n "$envoy_ns" --no-headers 2>/dev/null)
+
+    if [ $envoy_error -eq 1 ]; then
+        handle_health_error "Envoy/Gateway API har problem"
     fi
 
     if [ "$continue_after_argocd" -eq 0 ]; then
         handle_health_error "ArgoCD has failing pods"
     fi
 
-    echo -e "\n\033[34m9. Versioner...\033[0m"
+    echo -e "\n\033[34mVersioner...\033[0m"
     main_kubernetes_versions
 
     main_kubernetes_iscsi_health
