@@ -1257,15 +1257,24 @@ if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
     echo -e "\n\033[33m  Unsealed status...\033[0m"
     local vault_pod
     vault_pod=$(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    for pod in $(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        if kubectl exec -n vault "$pod" -- vault status 2>/dev/null | grep -q "HA Mode.*active"; then
+            vault_pod="$pod"
+            break
+        fi
+    done
+    if [ -z "$vault_pod" ]; then
+        vault_pod=$(kubectl get pods -n vault -l app.kubernetes.io/name=vault -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    fi
     if [ -z "$vault_pod" ]; then
         handle_health_error "No Vault pod found in namespace vault"
     else
-        local vault_status
-        vault_status=$(kubectl exec -n vault "$vault_pod" -- vault status 2>/dev/null | grep "Seal Status" | awk '{print $3}')
-        if [ "$vault_status" = "unsealed" ]; then
-            echo -e "\033[32m  ✓ Vault is unsealed\033[0m"
+        local vault_seal_status
+        vault_seal_status=$(kubectl exec -n vault "$vault_pod" -- vault status 2>/dev/null | grep "^Sealed" | awk '{print $2}')
+        if [ "$vault_seal_status" = "false" ]; then
+            echo -e "\033[32m  ✓ Vault is unsealed (Sealed: $vault_seal_status)\033[0m"
         else
-            handle_health_error "Vault is NOT unsealed (status: $vault_status)"
+            handle_health_error "Vault is NOT unsealed (Sealed: $vault_seal_status)"
         fi
     fi
 
@@ -1278,9 +1287,21 @@ if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
             vault_initialized=$(echo "$vault_health" | jq -r '.data.initialized' 2>/dev/null)
             vault_sealed=$(echo "$vault_health" | jq -r '.data.sealed' 2>/dev/null)
             vault_standby=$(echo "$vault_health" | jq -r '.data.standby' 2>/dev/null)
-            echo -e "    Initialized: ${vault_initialized}"
-            echo -e "    Sealed: ${vault_sealed}"
-            echo -e "    Standby: ${vault_standby}"
+            if [ "$vault_initialized" = "true" ]; then
+                echo -e "    Initialized: ${green}$vault_initialized${reset}"
+            else
+                echo -e "    Initialized: ${red}$vault_initialized${reset}"
+            fi
+            if [ "$vault_sealed" = "false" ]; then
+                echo -e "    Sealed: ${green}$vault_sealed${reset}"
+            else
+                echo -e "    Sealed: ${red}$vault_sealed${reset}"
+            fi
+            if [ "$vault_standby" = "false" ]; then
+                echo -e "    Standby: ${green}$vault_standby${reset}"
+            else
+                echo -e "    Standby: ${yellow}$vault_standby${reset}"
+            fi
         else
             handle_health_error "Kunde inte läsa Vault health"
         fi
@@ -1289,12 +1310,48 @@ if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
     echo -e "\n\033[33m  Test läsa secret...\033[0m"
     if [ -n "$vault_pod" ]; then
         local secret_test
-        secret_test=$(kubectl exec -n vault "$vault_pod" -- vault kv get secret/data/test 2>/dev/null)
-        if [ -n "$secret_test" ]; then
-            echo -e "\033[32m  ✓ Kan läsa secrets\033[0m"
-        else
-            handle_health_error "Kan inte läsa test-secret"
+        local secret_err
+        if ! kubectl exec -n vault "$vault_pod" -- vault secrets list 2>/dev/null | grep -q "^secret/"; then
+            kubectl exec -n vault "$vault_pod" -- vault secrets enable -path=secret kv-v2 2>/dev/null
         fi
+        kubectl exec -n vault "$vault_pod" -- vault kv put secret/data/test value="health-check" 2>/dev/null >/dev/null
+        secret_test=$(kubectl exec -n vault "$vault_pod" -- vault kv get secret/data/test 2>&1)
+        secret_err=$(echo "$secret_test" | grep -o "permission denied" || echo "")
+        if echo "$secret_test" | grep -q "Error making API request"; then
+            if [ -n "$secret_err" ]; then
+                handle_health_error "Kan inte läsa secret - permission denied (policy-problem)"
+            else
+                handle_health_error "Kan inte läsa secret: $(echo "$secret_test" | grep "Code:" | head -1)"
+            fi
+        else
+            echo -e "\033[32m  ✓ Kan läsa secrets\033[0m"
+        fi
+    fi
+
+    echo -e "\n\033[33m  Raft cluster status...\033[0m"
+    local raft_cluster_name raft_cluster_id first_node=1
+    local raft_errors=0
+    for pod in vault-0 vault-1 vault-2; do
+        local status_output cluster_name cluster_id
+        status_output=$(kubectl exec -n vault "$pod" -- vault status 2>/dev/null)
+        cluster_name=$(echo "$status_output" | grep "^Cluster Name" | sed 's/Cluster Name *//')
+        cluster_id=$(echo "$status_output" | grep "^Cluster ID" | awk '{print $3}')
+
+        if [ -z "$raft_cluster_name" ]; then
+            raft_cluster_name="$cluster_name"
+            raft_cluster_id="$cluster_id"
+            echo -e "  \033[32m$pod: cluster=$cluster_name, id=$cluster_id\033[0m"
+        else
+            if [ "$cluster_name" != "$raft_cluster_name" ] || [ "$cluster_id" != "$raft_cluster_id" ]; then
+                echo -e "  \033[31m✗ $pod: cluster=$cluster_name, id=$cluster_id (skillnad!)\033[0m"
+                raft_errors=1
+            else
+                echo -e "  \033[32m$pod: OK (cluster matchar)\033[0m"
+            fi
+        fi
+    done
+    if [ "$raft_errors" -eq 1 ]; then
+        handle_health_error "Vault-noder är inte i samma raft-cluster"
     fi
 
 if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
