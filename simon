@@ -136,7 +136,7 @@ main() {
                 if [ -n "$3" ]; then arg="$arg $3"; fi
                 case "$arg" in
                     "dashboard") shift 2; main_talos_dashboard "$@" ;;
-                    "upgrade") main_talos_upgrade ;;
+                    "upgrade"*) shift 2; main_talos_upgrade "$@" ;;
                     "update config") shift 3; main_talos_update_config "$@" ;;
                     "health") main_talos_health ;;
                     "update kubeconfig") main_talos_update_kubeconfig ;;
@@ -650,9 +650,10 @@ else
             talos)
                 arg="$2"
                 if [ -n "$3" ]; then arg="$arg $3"; fi
+                if [ -n "$4" ]; then arg="$arg $4"; fi
                 case "$arg" in
                     "dashboard") shift 2; main_talos_dashboard "$@" ;;
-                    "upgrade") main_talos_upgrade ;;
+                    "upgrade"*) shift 2; main_talos_upgrade "$@" ;;
                     "update config") shift 3; main_talos_update_config "$@" ;;
                     "health") main_talos_health ;;
                     "update kubeconfig") main_talos_update_kubeconfig ;;

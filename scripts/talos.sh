@@ -33,13 +33,31 @@ main_talos_dashboard() {
 }
 
 main_talos_upgrade() {
-    latestVersions=$(curl -s "https://api.github.com/repos/siderolabs/talos/releases?per_page=15" | jq -r '.[].tag_name')
-    echo -e "\033[34mVilken version vill du installera?\033[0m"
-    selectedVersion=$(fzfSelect "$latestVersions")
+    local target_node="${1:-}"
+    local target_version="${2:-}"
+    local target_login="${3:-}"
 
-    echo -e "\033[34mHur loggar du in mot klustret?\033[0m"
-    loginMethods=("Teleport" "Certifikat")
-    selectedMethod=$(fzfSelect "${loginMethods[@]}")
+    if [ -n "$target_node" ]; then
+        echo "Uppgraderar specifik nod: $target_node"
+    fi
+
+    if [ -z "$target_version" ]; then
+        echo -e "\033[34mVilken version vill du installera?\033[0m"
+        latestVersions=$(curl -s "https://api.github.com/repos/siderolabs/talos/releases?per_page=15" | jq -r '.[].tag_name')
+        selectedVersion=$(fzfSelect "$latestVersions")
+    else
+        selectedVersion="$target_version"
+        echo "Installerar version: $selectedVersion"
+    fi
+
+    if [ -z "$target_login" ]; then
+        echo -e "\033[34mHur loggar du in mot klustret?\033[0m"
+        loginMethods=("Teleport" "Certifikat")
+        selectedMethod=$(fzfSelect "${loginMethods[@]}")
+    else
+        selectedMethod="$target_login"
+        echo "Använder login-metod: $selectedMethod"
+    fi
 
     if [ "$selectedMethod" = "Certifikat" ]; then
         nodes=$(kubectl get nodes --kubeconfig "/tmp/kubeconfig-certificate" | awk 'NR>1 {print $1}')
@@ -47,8 +65,17 @@ main_talos_upgrade() {
         nodes=$(kubectl get nodes | awk 'NR>1 {print $1}')
     fi
 
-    echo -e "\033[34mVilka noder vill du uppdatera?\033[0m"
-    selectedNodes=$(fzfSelect "$nodes")
+    if [ -z "$target_node" ]; then
+        echo -e "\033[34mVilka noder vill du uppdatera?\033[0m"
+        selectedNodes=$(fzfSelect "$nodes")
+    else
+        if echo "$nodes" | grep -qw "$target_node"; then
+            selectedNodes="$target_node"
+        else
+            echo "❌ Noden $target_node hittades inte bland klustrets noder"
+            return 1
+        fi
+    fi
     selectedNodesString=$(echo "$selectedNodes" | tr ' ' ',')
     schematicID=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"talos-schematic-id\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
     arch=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"arch\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
