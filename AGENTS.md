@@ -88,22 +88,22 @@ echo -e "\033[31m❌ Error: $err\033[0m"
 main_my_command() {
     local arg1="$1"
     local arg2="${2:-default}"
-    
+
     # Validate inputs
     if [ -z "$arg1" ]; then
         echo "Usage: simon my-command <arg1> [arg2]"
         return 1
     fi
-    
+
     # Check command availability
     if ! command -v kubectl >/dev/null 2>&1; then
         echo "❌ kubectl not found"
         return 1
     fi
-    
+
     # Main logic
     kubectl get pods
-    
+
     return 0
 }
 ```
@@ -163,7 +163,7 @@ if [ "$status" = "connected" ]; then
     echo "Connected"
 fi
 
-# Numeric comparison  
+# Numeric comparison
 if [ "$exit_code" -ne 0 ]; then
     echo "Failed"
 fi
@@ -266,10 +266,10 @@ esac
 
 ## Key Files Reference
 
-| File | Purpose |
-|------|---------|
-| `simon` | Main entry point, sources all scripts |
-| `functions.sh` | Shared utilities like `fzfSelect()` |
-| `scripts/*.sh` | Command implementations |
-| `agent-os/` | Agent OS standards and workflows |
-| `CRUSH.md` | Legacy documentation (outdated) |
+| File           | Purpose                               |
+| -------------- | ------------------------------------- |
+| `simon`        | Main entry point, sources all scripts |
+| `functions.sh` | Shared utilities like `fzfSelect()`   |
+| `scripts/*.sh` | Command implementations               |
+| `agent-os/`    | Agent OS standards and workflows      |
+| `CRUSH.md`     | Legacy documentation (outdated)       |
