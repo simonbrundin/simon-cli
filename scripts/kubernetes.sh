@@ -1493,18 +1493,49 @@ if [ ${#health_errors[@]} -gt 0 ] && [ "$mode" = "strict" ]; then
         fi
     done < <(kubectl get pods -n "$eso_ns" --no-headers 2>/dev/null)
 
-    if [ $eso_error -eq 0 ]; then
-        echo -e "\033[33m  ClusterSecretStore 'vault-backend'...\033[0m"
-        local eso_condition
-        eso_condition=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
-        if [ "$eso_condition" = "True" ]; then
-            echo -e "  ${green}✓ vault-backend: Ready${reset}"
-        else
-            local eso_reason
-            eso_reason=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
-            echo -e "  ${red}✗ vault-backend: NotReady ($eso_reason)${reset}"
-            eso_error=1
+    echo -e "\033[33m  ClusterSecretStore 'vault-backend'...\033[0m"
+    local eso_condition
+    eso_condition=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$eso_condition" = "True" ]; then
+        echo -e "  ${green}✓ vault-backend: Ready${reset}"
+    else
+        local eso_reason eso_message eso_server
+        eso_reason=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}' 2>/dev/null)
+        eso_message=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null)
+        eso_server=$(kubectl get clustersecretstore vault-backend -o jsonpath='{.spec.provider.vault.server}' 2>/dev/null)
+        echo -e "  ${red}✗ vault-backend: NotReady${reset}"
+        echo -e "    Reason: $eso_reason"
+        echo -e "    Message: $eso_message"
+        echo -e "    Server: $eso_server"
+
+        if echo "$eso_message" | grep -q "no route to host"; then
+            echo -e "    ${yellow}→ Vault DNS kan inte nås. Kontrollera att ClusterSecretStore använder: http://vault.vault.svc.cluster.local:8200${reset}"
+            local vault_dns_test
+            vault_dns_test=$(kubectl run -it --rm vault-dns-test --image=curlimages/curl:latest --restart=Never -- curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 http://vault.vault.svc.cluster.local:8200/v1/sys/health 2>/dev/null || echo "failed")
+            if [ "$vault_dns_test" != "failed" ]; then
+                echo -e "    ${green}→ Vault DNS fungerar från poddar (HTTP: $vault_dns_test)${reset}"
+            else
+                echo -e "    ${red}→ Vault DNS fungerar INTE från poddar${reset}"
+            fi
         fi
+        eso_error=1
+    fi
+
+    echo -e "\033[33m  External Secrets i cert-manager namespace...\033[0m"
+    local cloudflare_secret cloudflare_secret_status
+    cloudflare_secret_status=$(kubectl get externalsecret cloudflare-api-token-secret -n cert-manager -o jsonpath='{.status.conditions[0].status}' 2>/dev/null)
+    if [ "$cloudflare_secret_status" = "True" ]; then
+        echo -e "  ${green}✓ cloudflare-api-token-secret: Synced${reset}"
+    else
+        local secret_reason secret_message
+        secret_reason=$(kubectl get externalsecret cloudflare-api-token-secret -n cert-manager -o jsonpath='{.status.conditions[0].reason}' 2>/dev/null)
+        secret_message=$(kubectl get externalsecret cloudflare-api-token-secret -n cert-manager -o jsonpath='{.status.conditions[0].message}' 2>/dev/null)
+        echo -e "  ${red}✗ cloudflare-api-token-secret: $secret_reason${reset}"
+        echo -e "    → $secret_message"
+        if echo "$secret_message" | grep -q "ClusterSecretStore"; then
+            echo -e "    ${yellow}→ Lösning: Fixa ClusterSecretStore 'vault-backend' först (se ovan)${reset}"
+        fi
+        eso_error=1
     fi
 
     if [ $eso_error -eq 1 ]; then
