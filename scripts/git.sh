@@ -27,7 +27,7 @@ main_push() {
     echo ""
 
     local files
-    files=$(git diff --name-only)
+    files=$(git diff --name-only HEAD)
 
     declare -A categories
     categories=(
