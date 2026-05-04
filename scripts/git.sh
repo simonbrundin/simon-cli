@@ -1,18 +1,5 @@
 #!/bin/bash
 
-# Converted from git.nu
-
-main_clone() {
-    name="$1"
-    git clone "git@github.com:simonbrundin/$name.git" "$HOME/repos/$name"
-    repo_path="$HOME/repos/$name"
-    if [ -d "$repo_path" ]; then
-        cd "$repo_path"
-    else
-        echo "Failed to clone or directory not found: $repo_path"
-    fi
-}
-
 main_push() {
     local changes
     changes=$(git status --short)
@@ -23,11 +10,15 @@ main_push() {
     fi
 
     echo "📋 Analyserar ändringar..."
-    echo "$changes"
+    git status --short
     echo ""
 
     local files
     files=$(git diff --name-only HEAD)
+
+    if [ -z "$files" ]; then
+        files=$(git status --porcelain | awk '{print $2}')
+    fi
 
     declare -A categories
     categories=(
@@ -40,43 +31,67 @@ main_push() {
         [test]=""
     )
 
+    local untracked_files=$(git status --porcelain | grep "^??" | awk '{print $2}')
+
     while IFS= read -r file; do
         [ -z "$file" ] && continue
 
         local ext="${file##*.}"
         local basename=$(basename "$file")
+        local dirname=$(dirname "$file")
 
         case "$ext" in
-            vue|ts|tsx)
+            vue|ts|tsx|js|jsx)
                 categories[feat]="${categories[feat]}\n$file"
                 ;;
             py)
-                if echo "$file" | grep -qiE "(fix|bug|error|patch)"; then
+                if echo "$file" | grep -qiE "(fix|bug|error|patch|hack)"; then
                     categories[fix]="${categories[fix]}\n$file"
                 else
                     categories[refactor]="${categories[refactor]}\n$file"
                 fi
                 ;;
-            md)
+            patch)
+                categories[fix]="${categories[fix]}\n$file"
+                ;;
+            md|rst|txt)
                 categories[docs]="${categories[docs]}\n$file"
                 ;;
-            json|yaml|yml|toml|env|gitignore)
+            json|yaml|yml|toml|env|gitignore|ini|conf)
                 categories[chore]="${categories[chore]}\n$file"
                 ;;
             css|scss|sass|less)
                 categories[style]="${categories[style]}\n$file"
                 ;;
             *)
-                if echo "$basename" | grep -qE "(\.test\.|\.spec\.|^test/|/tests/)"; then
+                if echo "$basename" | grep -qE "(\.test\.|\.spec\.|^test\.|\.spec\.)"; then
                     categories[test]="${categories[test]}\n$file"
-                elif echo "$file" | grep -qiE "(new|add|create)"; then
-                    categories[feat]="${categories[feat]}\n$file"
+                elif echo "$dirname" | grep -qE "(^test/|/tests?/)"; then
+                    categories[test]="${categories[test]}\n$file"
+                elif echo "$file" | grep -qiE "(refactor|restructure)"; then
+                    categories[refactor]="${categories[refactor]}\n$file"
                 else
                     categories[refactor]="${categories[refactor]}\n$file"
                 fi
                 ;;
         esac
     done <<< "$files"
+
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        categories[feat]="${categories[feat]}\n$file"
+    done <<< "$untracked_files"
+
+    echo "📊 Kategorisering:"
+    local total_files=0
+    for type in feat fix refactor docs chore style test; do
+        local count=$(echo -e "${categories[$type]}" | grep -v '^$' | wc -l)
+        if [ $count -gt 0 ]; then
+            echo "   $type: $count fil(er)"
+            total_files=$((total_files + count))
+        fi
+    done
+    echo ""
 
     local commit_count=0
     local commit_messages=()
@@ -89,13 +104,19 @@ main_push() {
         git add $file_list
 
         local count=$(echo -e "$files_in_cat" | grep -v '^$' | wc -l)
-        local msg="$type: $(echo "$file_list" | cut -d' ' -f1-3)$([ $count -gt 3 ] && echo " (+$((count-3)) more)" || true)"
 
-        git commit -m "$msg" 2>/dev/null && {
+        local first_files=$(echo "$file_list" | cut -d' ' -f1-3 | tr ' ' ', ')
+        if [ $count -gt 3 ]; then
+            local msg="$type: $first_files (+$((count-3)) more)"
+        else
+            local msg="$type: $first_files"
+        fi
+
+        if git commit -m "$msg" 2>/dev/null; then
             commit_count=$((commit_count + 1))
             commit_messages+=("$msg")
             echo "✅ Commit: $msg"
-        }
+        fi
     done
 
     if [ $commit_count -eq 0 ]; then
@@ -112,7 +133,7 @@ main_push() {
         echo "═══════════════════════════════════════"
         echo ""
         echo "📊 Sammanfattning:"
-        echo "   • Filer kategoriserade: $(echo "$files" | wc -l)"
+        echo "   • Filer kategoriserade: $total_files"
         echo "   • Commits skapade: $commit_count"
         echo ""
         echo "📝 Commit-meddelanden:"

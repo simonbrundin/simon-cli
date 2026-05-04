@@ -19,6 +19,7 @@ source "$SCRIPT_DIR/scripts/update.sh"
 source "$SCRIPT_DIR/scripts/unifi.sh"
 source "$SCRIPT_DIR/scripts/photos.sh"
 source "$SCRIPT_DIR/scripts/network.sh"
+source "$SCRIPT_DIR/scripts/stow.sh"
 
 # Source functions
 source "$SCRIPT_DIR/functions.sh"
@@ -229,6 +230,7 @@ main() {
                     *) echo "Unknown update command: $2" ;;
                 esac
                 ;;
+            stow) main_stow ;;
             cluster)
                 case "$2" in
                     health) shift 2; main_kubernetes_health "$@" ;;
@@ -752,12 +754,7 @@ else
                     *) echo "Unknown update command: $2" ;;
                 esac
                 ;;
-            cluster)
-                case "$2" in
-                    health) shift 2; main_kubernetes_health "$@" ;;
-                    *) echo "Unknown cluster command: $2" ;;
-                esac
-                ;;
+            stow) main_stow ;;
             trip) shift; main_trip "$@" ;;
             traceroute) shift; main_trip "$@" ;;
             *) echo "Unknown command: $1" ;;
