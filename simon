@@ -81,6 +81,7 @@ main() {
             new)
                 case "$2" in
                     repo) shift 2; main_new_repo "$@" ;;
+                    skill) main_new_skill ;;
                     *) echo "Unknown new command: $2" ;;
                 esac
                 ;;
@@ -373,6 +374,10 @@ main_new_repo() {
     echo "Repo $name skapat i $repo_path och pushat till GitHub!"
 }
 
+main_new_skill() {
+    npx ctx7 skills generate
+}
+
 main_vpn_down() {
     echo -e "\033[34m🔒 Kopplar från WireGuard...\033[0m"
     sudo wg-quick down unifi 2>&1 || echo "Ingen WireGuard-anslutning aktiv"
@@ -482,6 +487,7 @@ show_help() {
     echo "  ip                Show local IP addresses"
     echo "  vpn up            Connect to VPN"
     echo "  new repo <name>   Create new GitHub repo"
+    echo "  new skill         Generate new ctx7 skill"
     echo "  vpn down          Disconnect VPN"
     echo "  disk [path]       Disk usage analysis"
     echo "  flash             Flash device via PXE"
@@ -596,6 +602,7 @@ else
             new)
                 case "$2" in
                     repo) shift 2; main_new_repo "$@" ;;
+                    skill) main_new_skill ;;
                     *) echo "Unknown new command: $2" ;;
                 esac
                 ;;
@@ -755,6 +762,12 @@ else
                 esac
                 ;;
             stow) main_stow ;;
+            cluster)
+                case "$2" in
+                    health) shift 2; main_kubernetes_health "$@" ;;
+                    *) echo "Unknown cluster command: $2" ;;
+                esac
+                ;;
             trip) shift; main_trip "$@" ;;
             traceroute) shift; main_trip "$@" ;;
             *) echo "Unknown command: $1" ;;
