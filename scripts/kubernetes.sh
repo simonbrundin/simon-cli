@@ -1090,9 +1090,10 @@ echo -e "\n\033[34mKustomizations health...\033[0m"
             continue
         fi
         local name ready_status message
-        name=$(echo "$line" | awk '{print $1}')
-        ready_status=$(echo "$line" | awk '{print $4}')
-        message=$(echo "$line" | awk '{for (i=5; i<=NF; i++) printf "%s ", $i; print ""}')
+        ready_status=$(echo "$line" | awk -F'\t' '{print $5}')
+        ready_status=$(echo "$ready_status" | xargs)
+        name=$(echo "$line" | awk -F'\t' '{print $2}')
+        message=$(echo "$line" | awk -F'\t' '{for (i=6; i<=NF; i++) printf "%s ", $i; print ""}')
 
         if [ "$ready_status" = "True" ] || [ "$ready_status" = "Ready" ]; then
             echo -e "  ${green}✓ $name${reset}"
@@ -1100,7 +1101,7 @@ echo -e "\n\033[34mKustomizations health...\033[0m"
             echo -e "  ${red}✗ $name: $message${reset}"
             kustomization_errors=$((kustomization_errors + 1))
         fi
-    done < <(flux get kustomizations 2>/dev/null | awk 'NR>1 && $1!="" {print}' || echo "flux cli not configured")
+    done < <(flux get kustomizations -A 2>/dev/null | awk 'NR>1 && $1!="" {print}' || echo "flux cli not configured")
     if [ "$kustomization_errors" -gt 0 ]; then
         handle_health_error "Det finns $kustomization_errors Kustomizations som inte är Reconciled"
     fi
@@ -1120,9 +1121,10 @@ echo -e "\n\033[34mKustomizations health...\033[0m"
             continue
         fi
         local name ready message
-        name=$(echo "$line" | awk '{print $1}')
-        ready=$(echo "$line" | awk '{print $4}')
-        message=$(echo "$line" | awk '{for (i=5; i<=NF; i++) printf "%s ", $i; print ""}')
+        ready=$(echo "$line" | awk -F'\t' '{print $5}')
+        ready=$(echo "$ready" | xargs)
+        name=$(echo "$line" | awk -F'\t' '{print $2}')
+        message=$(echo "$line" | awk -F'\t' '{for (i=6; i<=NF; i++) printf "%s ", $i; print ""}')
 
         if [ "$ready" = "True" ]; then
             echo -e "  ${green}✓ $name${reset}"
@@ -1130,7 +1132,7 @@ echo -e "\n\033[34mKustomizations health...\033[0m"
             echo -e "  ${red}✗ $name${reset} → $message"
             source_errors=$((source_errors + 1))
         fi
-    done < <(flux get sources oci 2>/dev/null && flux get sources helm 2>/dev/null && flux get sources git 2>/dev/null || echo "flux cli not configured")
+    done < <(flux get sources oci -A 2>/dev/null && flux get sources helm -A 2>/dev/null && flux get sources git -A 2>/dev/null || echo "flux cli not configured")
     if [ "$source_errors" -gt 0 ]; then
         handle_health_error "Det finns $source_errors Flux Sources som inte är Ready"
     fi
@@ -1149,9 +1151,10 @@ echo -e "\n\033[34mKustomizations health...\033[0m"
             continue
         fi
         local name ready message
-        name=$(echo "$line" | awk '{print $1}')
-        ready=$(echo "$line" | awk '{print $4}')
-        message=$(echo "$line" | awk '{for (i=5; i<=NF; i++) printf "%s ", $i; print ""}')
+        ready=$(echo "$line" | awk -F'\t' '{print $5}')
+        ready=$(echo "$ready" | xargs)
+        name=$(echo "$line" | awk -F'\t' '{print $2}')
+        message=$(echo "$line" | awk -F'\t' '{for (i=6; i<=NF; i++) printf "%s ", $i; print ""}')
 
         if [ "$ready" = "True" ]; then
             echo -e "  ${green}✓ $name${reset}"
@@ -1159,7 +1162,7 @@ echo -e "\n\033[34mKustomizations health...\033[0m"
             echo -e "  ${red}✗ $name${reset} → $message"
             helmrelease_errors=$((helmrelease_errors + 1))
         fi
-    done < <(flux get helmreleases 2>/dev/null || echo "flux cli not configured")
+    done < <(flux get helmreleases -A 2>/dev/null || echo "flux cli not configured")
     if [ "$helmrelease_errors" -gt 0 ]; then
         handle_health_error "Det finns $helmrelease_errors HelmReleases som inte är Ready"
     fi
