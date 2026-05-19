@@ -1058,7 +1058,7 @@ main_kubernetes_health() {
         fi
     done
 
-    echo -e "\n\033[34mArgoCD pods...\033[0m"
+    echo -e "\n\033[34mFlux controllers...\033[0m"
     local green=$'\033[32m'
     local red=$'\033[31m'
     local reset=$'\033[0m'
@@ -1070,34 +1070,98 @@ main_kubernetes_health() {
             echo -e "${red}$line${reset}"
             has_error=1
         fi
-    done < <(kubectl get pods -n argocd --no-headers 2>/dev/null)
+    done < <(kubectl get pods -n flux-system --no-headers 2>/dev/null)
     if [ $has_error -eq 1 ]; then
-        handle_health_error "Det finns poddar som inte kör i argocd"
+        handle_health_error "Det finns poddar som inte kör i flux-system"
         continue_after_argocd=0
     fi
 
-    echo -e "\n\033[34mArgoCD sync status...\033[0m"
-    local argocd_sync_errors=0
-    while IFS= read -r app_line; do
-        local app_name sync_status health_status
-        app_name=$(echo "$app_line" | awk '{print $1}')
-        sync_status=$(echo "$app_line" | awk '{print $2}')
-        health_status=$(echo "$app_line" | awk '{print $3}')
-
-        if [ "$sync_status" = "Synced" ] && [ "$health_status" = "Healthy" ]; then
-            echo -e "  ${green}✓ $app_name: $sync_status/$health_status${reset}"
-        else
-            echo -e "  ${red}✗ $app_name: $sync_status/$health_status${reset}"
-            argocd_sync_errors=$((argocd_sync_errors + 1))
+echo -e "\n\033[34mKustomizations health...\033[0m"
+    local kustomization_errors=0
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^NAME ]]; then
+            continue
         fi
-    done < <(argocd app list -o name 2>/dev/null | while IFS= read -r app; do
-        local sync health
-        sync=$(argocd app get "$app" -o jsonpath='{.status.sync.status}' 2>/dev/null)
-        health=$(argocd app get "$app" -o jsonpath='{.status.health.status}' 2>/dev/null)
-        echo "$app $sync $health"
-    done || echo "argocd cli not configured")
-    if [ "$argocd_sync_errors" -gt 0 ]; then
-        handle_health_error "Det finns $argocd_sync_errors ArgoCD-appar som inte är Synced/Healthy"
+        if [[ -z "$line" ]]; then
+            continue
+        fi
+        if [ "$line" = "flux cli not configured" ]; then
+            echo -e "  ${red}✗ flux cli not configured${reset}"
+            continue
+        fi
+        local name ready_status message
+        name=$(echo "$line" | awk '{print $1}')
+        ready_status=$(echo "$line" | awk '{print $4}')
+        message=$(echo "$line" | awk '{for (i=5; i<=NF; i++) printf "%s ", $i; print ""}')
+
+        if [ "$ready_status" = "True" ] || [ "$ready_status" = "Ready" ]; then
+            echo -e "  ${green}✓ $name${reset}"
+        else
+            echo -e "  ${red}✗ $name: $message${reset}"
+            kustomization_errors=$((kustomization_errors + 1))
+        fi
+    done < <(flux get kustomizations 2>/dev/null | awk 'NR>1 && $1!="" {print}' || echo "flux cli not configured")
+    if [ "$kustomization_errors" -gt 0 ]; then
+        handle_health_error "Det finns $kustomization_errors Kustomizations som inte är Reconciled"
+    fi
+
+    echo -e "\n\033[34mFlux Sources...\033[0m"
+    local source_errors=0
+    local line
+    while IFS= read -r line; do
+        if [ "$line" = "flux cli not configured" ]; then
+            echo -e "  ${red}✗ flux cli not configured${reset}"
+            continue
+        fi
+        if [[ "$line" =~ ^NAME ]]; then
+            continue
+        fi
+        if [[ -z "$line" ]]; then
+            continue
+        fi
+        local name ready message
+        name=$(echo "$line" | awk '{print $1}')
+        ready=$(echo "$line" | awk '{print $4}')
+        message=$(echo "$line" | awk '{for (i=5; i<=NF; i++) printf "%s ", $i; print ""}')
+
+        if [ "$ready" = "True" ]; then
+            echo -e "  ${green}✓ $name${reset}"
+        else
+            echo -e "  ${red}✗ $name${reset} → $message"
+            source_errors=$((source_errors + 1))
+        fi
+    done < <(flux get sources oci 2>/dev/null && flux get sources helm 2>/dev/null && flux get sources git 2>/dev/null || echo "flux cli not configured")
+    if [ "$source_errors" -gt 0 ]; then
+        handle_health_error "Det finns $source_errors Flux Sources som inte är Ready"
+    fi
+
+    echo -e "\n\033[34mHelmReleases...\033[0m"
+    local helmrelease_errors=0
+    while IFS= read -r line; do
+        if [ "$line" = "flux cli not configured" ]; then
+            echo -e "  ${red}✗ flux cli not configured${reset}"
+            continue
+        fi
+        if [[ "$line" =~ ^NAME ]]; then
+            continue
+        fi
+        if [[ -z "$line" ]]; then
+            continue
+        fi
+        local name ready message
+        name=$(echo "$line" | awk '{print $1}')
+        ready=$(echo "$line" | awk '{print $4}')
+        message=$(echo "$line" | awk '{for (i=5; i<=NF; i++) printf "%s ", $i; print ""}')
+
+        if [ "$ready" = "True" ]; then
+            echo -e "  ${green}✓ $name${reset}"
+        else
+            echo -e "  ${red}✗ $name${reset} → $message"
+            helmrelease_errors=$((helmrelease_errors + 1))
+        fi
+    done < <(flux get helmreleases 2>/dev/null || echo "flux cli not configured")
+    if [ "$helmrelease_errors" -gt 0 ]; then
+        handle_health_error "Det finns $helmrelease_errors HelmReleases som inte är Ready"
     fi
 
     echo -e "\n\033[34mPending CSR...\033[0m"
