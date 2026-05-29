@@ -2234,3 +2234,162 @@ main_kubernetes_longhorn_repair() {
     echo "  kan du behöva starta about Longhorn-manager poddar på noden:"
     echo "    kubectl delete pod -n longhorn-system -l app=longhorn-manager --field-selector spec.nodeName=$selected_node"
 }
+
+main_kubernetes_new() {
+    case "$2" in
+        secret) main_kubernetes_new_secret ;;
+        *) echo "Unknown 'new' command: $2" ;;
+    esac
+}
+
+main_kubernetes_new_secret() {
+    echo -e "\033[34m🔐 Skapa ny Krypterad Kubernetes Secret\033[0m"
+    echo "============================================"
+    echo ""
+
+    echo -n "1. Ange hemlighetens namn: "
+    read -r secret_name
+    if [ -z "$secret_name" ]; then
+        echo -e "\033[31m❌ Namn är obligatoriskt\033[0m"
+        return 1
+    fi
+
+    echo ""
+    echo "2. Välj namespace:"
+    namespaces=$(kubectl get namespaces -o json | jq -r '.items[].metadata.name' | sort)
+    namespace=$(echo "$namespaces" | fzf --header="Välj namespace")
+    if [ -z "$namespace" ]; then
+        echo -e "\033[31m❌ Inget namespace valt\033[0m"
+        return 1
+    fi
+    echo -e "\033[32m✓ Namespace: $namespace\033[0m"
+
+    echo ""
+    echo "3. Ange key-value par (avsluta med 'done'):"
+    declare -A secret_data
+    while true; do
+        echo -n "   Nyckel: "
+        read -r key
+        if [ "$key" = "done" ]; then
+            break
+        fi
+        if [ -z "$key" ]; then
+            continue
+        fi
+        echo -n "   Värde: "
+        read -r value
+        secret_data["$key"]="$value"
+        echo ""
+    done
+
+    if [ ${#secret_data[@]} -eq 0 ]; then
+        echo -e "\033[31m❌ Minst ett key-value par krävs\033[0m"
+        return 1
+    fi
+
+    echo ""
+    echo -e "\033[34m4. Förhandsvisning\033[0m"
+    echo "----------------------"
+    echo "Namn:     $secret_name"
+    echo "Namespace: $namespace"
+    echo "Data:"
+    for key in "${!secret_data[@]}"; do
+        echo "  $key: ${secret_data[$key]}"
+    done
+
+    echo ""
+    echo -n "5. Bekräfta och spara? [j/n]: "
+    read -r confirm
+    if [ "$confirm" != "j" ] && [ "$confirm" != "J" ]; then
+        echo "Avbrutet."
+        return 0
+    fi
+
+    secret_file="/tmp/$secret_name.yaml"
+    cat > "$secret_file" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+    name: $secret_name
+    namespace: $namespace
+stringData:
+EOF
+
+    first=true
+    for key in "${!secret_data[@]}"; do
+        if [ "$first" = true ]; then
+            echo "    $key: ${secret_data[$key]}" >> "$secret_file"
+            first=false
+        else
+            echo "    $key: ${secret_data[$key]}" >> "$secret_file"
+        fi
+    done
+
+    echo ""
+    echo -e "\033[34m6. Krypterar med SOPS...\033[0m"
+
+    infra_repo="$HOME/repos/infrastructure"
+    if [ ! -f "$infra_repo/.sops.yaml" ]; then
+        echo -e "\033[31m❌ .sops.yaml hittades inte i $infra_repo\033[0m"
+        rm -f "$secret_file"
+        return 1
+    fi
+
+    cd "$infra_repo" || {
+        echo -e "\033[31m❌ Kunde inte byta till $infra_repo\033[0m"
+        rm -f "$secret_file"
+        return 1
+    }
+
+    encrypted_file="$infra_repo/infrastructure-flux/components/secrets/$secret_name.enc.yaml"
+    sops --encrypt "$secret_file" > "$encrypted_file" 2>/dev/null
+
+    if [ $? -ne 0 ]; then
+        echo -e "\033[31m❌ Kryptering misslyckades\033[0m"
+        rm -f "$secret_file"
+        cd - > /dev/null
+        return 1
+    fi
+
+    rm -f "$secret_file"
+
+    echo -e "\033[32m✓ Krypterad secret sparad till:\033[0m"
+    echo "  $encrypted_file"
+
+    echo ""
+    echo -e "\033[34m7. Uppdaterar kustomization.yaml...\033[0m"
+
+    kustomization_file="$infra_repo/infrastructure-flux/components/secrets/kustomization.yaml"
+    if grep -q "$secret_name.enc.yaml" "$kustomization_file"; then
+        echo -e "\033[33m⚠️ $secret_name.enc.yaml finns redan i kustomization.yaml\033[0m"
+    else
+        sed -i "/^- secrets.enc.yaml/a\\  - $secret_name.enc.yaml" "$kustomization_file"
+        echo -e "\033[32m✓ $secret_name.enc.yaml lades till i kustomization.yaml\033[0m"
+    fi
+
+    echo ""
+    echo -e "\033[34m8. Git add, commit och push...\033[0m"
+
+    git add "infrastructure-flux/components/secrets/$secret_name.enc.yaml"
+    git add "infrastructure-flux/components/secrets/kustomization.yaml"
+    git commit -m "feat: add $secret_name secret"
+
+    if [ $? -ne 0 ]; then
+        echo -e "\033[31m❌ Git commit misslyckades\033[0m"
+        cd - > /dev/null
+        return 1
+    fi
+
+    git push
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "\033[32m✅ Klart! Secret $secret_name är skapad och pushad.\033[0m"
+        echo ""
+        echo "Flux kommer automatiskt plocka upp ändringen."
+    else
+        echo -e "\033[31m❌ Git push misslyckades\033[0m"
+    fi
+
+    cd - > /dev/null
+}
