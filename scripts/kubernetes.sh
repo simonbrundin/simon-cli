@@ -2242,6 +2242,22 @@ main_kubernetes_new() {
     esac
 }
 
+format_secret_value() {
+    local key="$1"
+    local value="$2"
+
+    if [ "$key" = ".dockerconfigjson" ]; then
+        if echo "$value" | jq -e . >/dev/null 2>&1; then
+            echo "    $key: |"
+            echo "$value" | jq -r '.' | sed 's/^/        /'
+        else
+            echo "    $key: $value"
+        fi
+    else
+        echo "    $key: $value"
+    fi
+}
+
 main_kubernetes_new_secret() {
     echo -e "\033[34m🔐 Skapa ny Krypterad Kubernetes Secret\033[0m"
     echo "============================================"
@@ -2315,14 +2331,8 @@ metadata:
 stringData:
 EOF
 
-    first=true
     for key in "${!secret_data[@]}"; do
-        if [ "$first" = true ]; then
-            echo "    $key: ${secret_data[$key]}" >> "$secret_file"
-            first=false
-        else
-            echo "    $key: ${secret_data[$key]}" >> "$secret_file"
-        fi
+        format_secret_value "$key" "${secret_data[$key]}" >> "$secret_file"
     done
 
     echo ""
