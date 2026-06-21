@@ -187,3 +187,68 @@ main_new_worktree() {
 		return 1
 	fi
 }
+
+main_pr() {
+	# 0. Hämta parent repo för att kunna navigera tillbaka
+	local parent_repo
+	parent_repo=$(basename -s .git "$(git remote get-url origin)" 2>/dev/null) || true
+
+	# 1. Kontrollera att vi är i ett git repo
+	if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		echo "❌ Inte i ett git-repo"
+		return 1
+	fi
+
+	# 2. Hämta branch
+	local branch
+	branch=$(git branch --show-current)
+
+	if [ -z "$branch" ]; then
+		echo "❌ Ingen branch detekterad"
+		return 1
+	fi
+
+	echo "📦 Current branch: $branch"
+
+	# 3. Kontrollera om det finns uncommitted changes
+	if ! git diff --quiet || ! git diff --cached --quiet; then
+		echo "❌ Du har ocommitade ändringar. Commit först."
+		return 1
+	fi
+
+	# 4. Kontrollera om branch är pushad
+	if ! git ls-remote --exit-code origin "$branch" >/dev/null 2>&1; then
+		echo "🚀 Branch finns inte på remote. Pushar..."
+		git push -u origin "$branch" || return 1
+	else
+		echo "✔ Branch finns redan på remote"
+	fi
+
+	# 5. Skapa PR
+	echo "📝 Skapar PR..."
+	gh pr create --fill --web
+
+	# 6. Hitta worktree root och parent repo
+	local root
+	local parent_repo
+	local current_dir
+	root=$(git rev-parse --show-toplevel)
+	parent_repo=$(basename -s .git "$(git remote get-url origin)")
+	current_dir="$HOME/repos/$parent_repo"
+
+	# 7. Navigera till parent repo först
+	cd "$current_dir" || {
+		echo "❌ Kunde inte navigera till $current_dir"
+		return 1
+	}
+
+	# 8. Ta bort worktree om det finns
+	if [ -d "$root" ]; then
+		echo "🧹 Tar bort worktree: $root"
+		git worktree remove "$root" --force
+	else
+		echo "🧹 Worktree finns redan inte: $root"
+	fi
+
+	echo "✅ Klart! Nu i: $current_dir"
+}

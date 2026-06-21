@@ -244,6 +244,7 @@ main() {
                 ;;
             trip) shift; main_trip "$@" ;;
             traceroute) shift; main_trip "$@" ;;
+            pr) main_pr ;;
             *) echo "Unknown command: $1" ;;
         esac
 }
@@ -780,6 +781,7 @@ else
                 ;;
             trip) shift; main_trip "$@" ;;
             traceroute) shift; main_trip "$@" ;;
+            pr) main_pr ;;
             *) echo "Unknown command: $1" ;;
         esac
 fi
