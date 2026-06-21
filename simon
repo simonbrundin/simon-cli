@@ -82,9 +82,11 @@ main() {
                 case "$2" in
                     repo) shift 2; main_new_repo "$@" ;;
                     skill) main_new_skill ;;
+                    worktree) shift 2; main_new_worktree "$@" ;;
                     *) echo "Unknown new command: $2" ;;
                 esac
                 ;;
+            nw) shift; main_new_worktree "$@" ;;
             disk) shift; main_disk "$@" ;;
             flash) main_flash ;;
             xfs) main_xfs ;;
@@ -490,6 +492,8 @@ show_help() {
     echo "  vpn up            Connect to VPN"
     echo "  new repo <name>   Create new GitHub repo"
     echo "  new skill         Generate new ctx7 skill"
+    echo "  new worktree <name> Create new git worktree"
+    echo "  nw <name>         Short for: new worktree (use 'source simon nw <name>') for auto-cd"
     echo "  vpn down          Disconnect VPN"
     echo "  disk [path]       Disk usage analysis"
     echo "  flash             Flash device via PXE"
@@ -605,9 +609,11 @@ else
                 case "$2" in
                     repo) shift 2; main_new_repo "$@" ;;
                     skill) main_new_skill ;;
+                    worktree) shift 2; main_new_worktree "$@" ;;
                     *) echo "Unknown new command: $2" ;;
                 esac
                 ;;
+            nw) shift; main_new_worktree "$@" ;;
             disk) shift; main_disk "$@" ;;
             flash) main_flash ;;
             xfs) main_xfs ;;
