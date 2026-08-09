@@ -584,6 +584,10 @@ echo "AI commands:"
     echo ""
     echo "Update commands:"
     echo "  update agentos [--no-projects]  Update Agent OS and optionally projects"
+    echo ""
+    echo "Network commands:"
+    echo "  trip <target>      Trace route to target"
+    echo "  kill <port>        Kill process running on port"
 }
 
 # Run logic if executed or sourced
@@ -781,6 +785,7 @@ else
                 ;;
             trip) shift; main_trip "$@" ;;
             traceroute) shift; main_trip "$@" ;;
+            kill) shift; main_kill "$@" ;;
             pr) main_pr ;;
             *) echo "Unknown command: $1" ;;
         esac
