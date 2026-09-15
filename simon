@@ -478,7 +478,16 @@ main_kanata_start() {
 }
 
 main_kanata_restart() {
-    systemctl --user restart kanata
+    systemctl --user restart kanata.service
+
+    if ! systemctl --user is-active --quiet kanata.service; then
+        echo "Kanata kunde inte startas." >&2
+        systemctl --user --no-pager --lines=12 status kanata.service >&2
+        return 1
+    fi
+
+    echo "Kanata körs via systemd."
+    systemctl --user --no-pager --lines=8 status kanata.service
 }
 
 main_kanata_test() {
