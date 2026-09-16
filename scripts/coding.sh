@@ -8,7 +8,7 @@ main_dev() {
 	local root_dir=""
 
 	while [ "$current_dir" != "/" ]; do
-		if [ -d "$current_dir/.git" ]; then
+		if [ -d "$current_dir/.git" ] || [ -f "$current_dir/.git" ]; then
 			root_dir="$current_dir"
 			break
 		fi
@@ -16,7 +16,7 @@ main_dev() {
 	done
 
 	if [ -z "$root_dir" ]; then
-		echo "❌ Not in a git project (no .git directory found)"
+		echo "❌ Not in a git project (no .git directory/file found)"
 		return 1
 	fi
 
@@ -27,9 +27,15 @@ main_dev() {
 		return 1
 	fi
 
+	# Generate unique port based on worktree/project name
+	local project_name=$(basename "$root_dir")
+	local port_offset=$(echo "$project_name" | cksum | awk '{print $1 % 100}')
+	local tilt_port=$((10350 + port_offset))
+
 	echo "📁 Changing to: $dev_dir"
 	cd "$dev_dir" || return 1
-	tilt up
+	echo "🚀 Starting Tilt on port $tilt_port"
+	TILT_PORT="$tilt_port" tilt up
 }
 
 main_devpod_delete() {

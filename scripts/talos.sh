@@ -4,6 +4,29 @@
 
 export TALOSCONFIG=/home/simon/.talos/config
 
+# Funktion för att extrahera första YAML-dokumentet
+# talosctl gen config genererar flera YAML-dokument (NDYAML), apply-config kräver ett enda
+convert_ndjson_to_yaml() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    if [ ! -f "$input_file" ]; then
+        echo "   [convert] ❌ Input-fil finns inte: $input_file"
+        return 1
+    fi
+    
+    # Extrahera första dokumentet med awk (allt före första ---)
+    # talosctl gen config genererar NDYAML med --- som dokumentavskiljare
+    awk '/^---$/{exit} {print}' "$input_file" > "$output_file" 2>/dev/null
+    
+    if [ $? -eq 0 ] && [ -s "$output_file" ]; then
+        return 0
+    else
+        echo "   [convert] ❌ awk misslyckades"
+        return 1
+    fi
+}
+
 main_talos_dashboard() {
     ip="${1:-10.10.10.11}"
     
@@ -354,19 +377,43 @@ main_talos_update_config() {
         # För noder i maintenance mode, generera konfiguration
         echo "📝 Installerar noden $node_name i maintenance mode..."
 
-        output_types="controlplane,worker,talosconfig"
+        # Viktigt: För att noden ska kunna ansluta till klustret måste vi
+        # använda konfiguration från en redan fungerande nod.
+        # Vi hämtar hela configen och ändrar bara hostname.
 
-        base_cmd="talosctl gen config $cluster_name $endpoint --output-types=$output_types --with-docs=false --with-examples=false --config-patch-control-plane=@patches/controlplane.yaml -o $config_dir --with-secrets=secrets.yaml --force --config-patch=@patches/all.yaml"
+        # Hämta referens-nod (första fungerande controlplane)
+        local reference_ip="$controlplane_ip"
+        echo "📝 Hämtar konfiguration från referens-nod $reference_ip..."
 
-        full_cmd="$base_cmd"
+        # Spara machineconfig från referens-noden tillfälligt
+        local reference_config="$config_dir/reference_config.yaml"
+        talosctl --talosconfig talosconfig get machineconfig -o yaml -n "$reference_ip" 2>/dev/null | \
+            sed '1,/^spec:/d' | \
+            sed 's/^    /  /g' > "$reference_config" || {
+            echo "❌ Kunde inte hämta konfiguration från $reference_ip"
+            echo "-----------------------------"
+            continue
+        }
 
-        echo "Kör kommando: $full_cmd"
-        eval "$full_cmd"
-        echo "Genererar konfiguration för noden $node_ip"
+        # Använd referens-config som bas
+        config_file="$reference_config"
 
-        sleep 2
+        # Ändra hostname i configen
+        if command -v yq &> /dev/null; then
+            echo "📝 Uppdaterar hostname till $node_name..."
+            # Använd -y för YAML output (krävs för äldre yq versioner)
+            yq -y '.machine.network.hostname = "'$node_name'"' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+        fi
 
-        config_file="$config_dir/$role.yaml"
+        # Ta bort fält som kan orsaka problem vid ominstallation
+        if command -v yq &> /dev/null; then
+            # Ta bort cluster.discovery (kräver discovery service secret som inte finns)
+            yq -y 'del(.cluster.discovery) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+            # Ta bort refreshInterval
+            yq -y 'del(.cluster.refreshInterval) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+        fi
+
+        echo "Config förberedd för noden $node_ip"
 
         if [ ! -f "$config_file" ]; then
             echo "FEL: Konfigurationsfilen $config_file skapades INTE!"
@@ -374,10 +421,8 @@ main_talos_update_config() {
             continue
         fi
 
-        # Ta bort hostname från config så vi kan sätta det efter apply
-        if command -v yq &> /dev/null; then
-            yq 'select(.kind != "HostnameConfig")' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
-        fi
+        # Nu är config_file redan en referens till reference_config.yaml (som är enskild YAML)
+        # Så vi behöver inte konvertera
 
         # Om diskSelector finns i patch, ta bort 'disk' för att undvika konflikt
         if [ -f "patches/nodes/$node_name.yaml" ]; then
@@ -397,18 +442,13 @@ main_talos_update_config() {
             fi
         fi
 
-        # Bygg ihop config-patch med hostname och diskSelector
-        config_patch="{\"machine\":{\"network\":{\"hostname\":\"$node_name\"}}}"
-        if [ "$node_has_disk_selector" = "true" ] && [ -n "$node_disk_selector_patch" ]; then
-            config_patch="$node_disk_selector_patch"
-        fi
-
         echo "📝 Applicerar konfiguration på $node_name..."
-        if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file" --config-patch "$config_patch"; then
+        if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file" 2>&1; then
 
             echo "✅ Konfiguration applicerad med hostname $node_name!"
             echo "ℹ️  Noden startas om och hostname kommer att sättas."
-            yq -i ".nodes[] |= select(.name == \"$node_name\") | .initialized = true" nodes.yaml
+            yq -i -o y '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || \
+            yq -i '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || true
         else
             echo "❌ Kunde inte applicera konfiguration"
         fi
