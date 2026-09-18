@@ -288,10 +288,44 @@ main_talos_update_config() {
         if [ "$node_initialized" = "true" ]; then
             echo "Noden $node_ip är initialiserad, applicerar konfigurationen direkt."
 
-            # Hämta diskSelector serial om den finns i patch-filen
-            local disk_serial=""
-            if [ -f "patches/nodes/$node_name.yaml" ]; then
-                disk_serial=$(grep "serial:" "patches/nodes/$node_name.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+            # Hämta nodens egen config och visa viktiga fält
+            echo "📝 Hämtar nodens nuvarande config..."
+            local node_config_tmp="$config_dir/node_config_$node_name.yaml"
+            talosctl --talosconfig talosconfig get machineconfig -o yaml -n "$node_ip" 2>/dev/null | \
+                sed '1,/^spec:/d' | sed 's/^    /  /g' > "$node_config_tmp" || {
+                echo "  ⚠️ Kunde inte hämta nodens config, hoppar över..."
+                echo "-----------------------------"
+                continue
+            }
+
+            # Verifiera kritiska fält i nodens egen config
+            local node_vip node_hostname node_token cluster_token node_install_image
+            node_vip=$(yq '.machine.network.interfaces[0].vip // empty' "$node_config_tmp" 2>/dev/null)
+            node_hostname=$(yq '.machine.network.hostname' "$node_config_tmp" 2>/dev/null)
+            node_install_image=$(yq '.machine.install.image // empty' "$node_config_tmp" 2>/dev/null)
+
+            echo "  ✅ Hämtad config för $node_name (hostname=$node_hostname, vip=${node_vip:-<ej satt>}, install=${node_install_image:-<default>})"
+
+            # Hämta klustrets version för att uppdatera installer image
+            local cluster_version
+            cluster_version=$(talosctl --talosconfig talosconfig version -n "$reference_ip" 2>/dev/null | grep "Tag:" | head -1 | awk '{print $2}' || echo "")
+            if [ -z "$cluster_version" ]; then
+                echo "  ⚠️ Kunde inte hämta klustrets version, använder <default>"
+                cluster_version=""
+            else
+                echo "  ✅ Klustret kör Talos $cluster_version"
+            fi
+
+            # Kontrollera om installer image behöver uppdateras
+            local needs_install_update=false
+            if [ -n "$cluster_version" ] && [ -n "$node_install_image" ]; then
+                # Extrahera versionen ur install.image (t.ex. ghcr.io/siderolabs/installer:v1.14.0)
+                local node_installer_version
+                node_installer_version=$(echo "$node_install_image" | grep -oP 'v\d+\.\d+\.\d+' | head -1)
+                if [ "$node_installer_version" != "$cluster_version" ]; then
+                    echo "  ⚠️ Installer version $node_installer_version != klustret $cluster_version"
+                    needs_install_update=true
+                fi
             fi
 
             # Applicera UserVolumeConfigs separat (Talos stödjer inte multi-doc patch)
@@ -325,17 +359,21 @@ main_talos_update_config() {
                 fi
             fi
 
-            # Applicera hostname separat (JSON6902 patch)
-            echo "📝 Applicerar hostname: $node_name..."
-            if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
-                --patch "[{\"op\": \"add\", \"path\": \"/machine/network/hostname\", \"value\": \"$node_name\"}]" \
-                --mode no-reboot 2>&1 | grep -v "skipped"; then
-                echo "✅ Hostname applicerad"
-            else
-                echo "  (hostname är redan korrekt eller patchade inte vid omstart)"
+            # Applicera hostname om det inte matchar
+            if [ "$node_hostname" != "$node_name" ]; then
+                echo "📝 Uppdaterar hostname: $node_name..."
+                if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                    --patch "[{\"op\": \"add\", \"path\": \"/machine/network/hostname\", \"value\": \"$node_name\"}]" \
+                    --mode no-reboot 2>&1 | grep -v "skipped"; then
+                    echo "  ✅ Hostname uppdaterad"
+                fi
             fi
 
-            # Applicera diskSelector separat
+            # Applicera diskSelector om den finns i patch
+            local disk_serial=""
+            if [ -f "patches/nodes/$node_name.yaml" ]; then
+                disk_serial=$(grep "serial:" "patches/nodes/$node_name.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+            fi
             if [ -n "$disk_serial" ]; then
                 echo "📝 Lägger till diskSelector (serial: $disk_serial)..."
                 talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
@@ -344,29 +382,37 @@ main_talos_update_config() {
                 talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
                     --patch '[{"op": "replace", "path": "/machine/install/diskSelector/serial", "value": "'"$disk_serial"'"}]' \
                     --mode no-reboot 2>/dev/null || true
-                echo "✅ diskSelector applicerad"
+                echo "  ✅ diskSelector applicerad"
+            fi
+
+            # Uppdatera installer image om det behövs
+            if [ "$needs_install_update" = true ]; then
+                echo "📝 Uppdaterar installer image till $cluster_version..."
+                if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                    --patch "[{\"op\": \"replace\", \"path\": \"/machine/install/image\", \"value\": \"ghcr.io/siderolabs/installer:$cluster_version\"}]" \
+                    --mode auto 2>&1 | grep -v "skipped"; then
+                    echo "  ✅ Installer image uppdaterad (nod $node_name kommer att reboota)"
+                else
+                    echo "  ⚠️ Installer image uppdatering misslyckades"
+                fi
             fi
 
             # Installera extensions om de inte redan finns
             if [ "$node_needs_extension_upgrade" = true ] && [ -n "$talos_schematic_id" ] && [ "$talos_schematic_id" != "null" ]; then
                 echo "📝 Installerar extensions via upgrade..."
                 echo "  Installerar med schematic: $talos_schematic_id"
-                echo "🔗 https://factory.talos.dev/image/${talos_schematic_id}/${talos_version}/metal-${arch}.raw.xz"
-                
-                # Hämta aktuell Talos-version med v-prefix
-                local talos_version
-                talos_version=$(talosctl --talosconfig talosconfig version -n "$node_ip" 2>/dev/null | grep "Tag:" | head -1 | awk '{print $2}' || echo "")
-                
-                if [ -z "$talos_version" ]; then
-                    talos_version="vlatest"
+                echo "🔗 https://factory.talos.dev/image/${talos_schematic_id}/${cluster_version}/metal-${arch}.raw.xz"
+
+                if [ -z "$cluster_version" ]; then
+                    cluster_version="vlatest"
                 fi
-                
-                echo "  Talos version: $talos_version"
-                
-                if talosctl upgrade --image "factory.talos.dev/installer/$talos_schematic_id:$talos_version" -n "$node_ip" --wait --timeout 10m 2>&1; then
+
+                echo "  Talos version: $cluster_version"
+
+                if talosctl upgrade --image "factory.talos.dev/installer/$talos_schematic_id:$cluster_version" -n "$node_ip" --wait --timeout 10m 2>&1; then
                     echo "  ✅ Extensions installerade (Talos upgrade med schematic $talos_schematic_id)"
                 else
-                    echo "  ⚠️ Upgrade misslyckades med version $talos_version"
+                    echo "  ⚠️ Upgrade misslyckades med version $cluster_version"
                 fi
             fi
 
@@ -377,40 +423,84 @@ main_talos_update_config() {
         # För noder i maintenance mode, generera konfiguration
         echo "📝 Installerar noden $node_name i maintenance mode..."
 
-        # Viktigt: För att noden ska kunna ansluta till klustret måste vi
-        # använda konfiguration från en redan fungerande nod.
-        # Vi hämtar hela configen och ändrar bara hostname.
-
-        # Hämta referens-nod (första fungerande controlplane)
+        # Hämta referens-nod baserat på roll
         local reference_ip="$controlplane_ip"
-        echo "📝 Hämtar konfiguration från referens-nod $reference_ip..."
+        local reference_role="controlplane"
+        
+        if [ "$role" = "worker" ]; then
+            # Hitta en fungerande worker att använda som referens
+            local worker_ip=$(yq ".nodes[] | select(.role == \"worker\") | select(.name != \"$node_name\") | select(.initialized == true) | .ip" nodes.yaml 2>/dev/null | head -1 | tr -d '"')
+            if [ -n "$worker_ip" ] && [ "$worker_ip" != "null" ]; then
+                reference_ip="$worker_ip"
+                reference_role="worker"
+                echo "📝 Hittade worker $reference_ip som referens för worker-nod"
+            else
+                echo "⚠️  Ingen fungerande worker hittad, använder controlplane som referens"
+            fi
+        fi
+        
+        echo "📝 Hämtar konfiguration från referens-nod $reference_ip (role: $reference_role)..."
 
         # Spara machineconfig från referens-noden tillfälligt
         local reference_config="$config_dir/reference_config.yaml"
-        talosctl --talosconfig talosconfig get machineconfig -o yaml -n "$reference_ip" 2>/dev/null | \
-            sed '1,/^spec:/d' | \
-            sed 's/^    /  /g' > "$reference_config" || {
+        talosctl --talosconfig talosconfig get machineconfig -o yaml -n "$reference_ip" 2>/dev/null > "$reference_config.raw" || {
             echo "❌ Kunde inte hämta konfiguration från $reference_ip"
             echo "-----------------------------"
             continue
         }
+        
+        # Extrahera spec-fältet (tar bort metadata-wrapper)
+        # Output är i Kubernetes resource format: spec: | (block scalar)
+        # Vi tar allt från 'spec: |' till nästa dokument ('---') eller filslut
+        awk '/^spec: \|$/,/^---$/{ if (/^---$/) exit; if (!/^spec: \|$/) print }' "$reference_config.raw" | sed 's/^    //' > "$reference_config"
+        rm "$reference_config.raw"
 
         # Använd referens-config som bas
         config_file="$reference_config"
 
-        # Ändra hostname i configen
-        if command -v yq &> /dev/null; then
-            echo "📝 Uppdaterar hostname till $node_name..."
-            # Använd -y för YAML output (krävs för äldre yq versioner)
-            yq -y '.machine.network.hostname = "'$node_name'"' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+        # Hämta klustrets Talos-version för att sätta rätt installer image
+        local cluster_version
+        cluster_version=$(talosctl --talosconfig talosconfig version -n "$reference_ip" 2>/dev/null | grep "Tag:" | head -1 | awk '{print $2}' || echo "")
+        if [ -z "$cluster_version" ]; then
+            echo "  ⚠️ Kunde inte hämta klustrets version, behåller referens-configens installer"
+        else
+            echo "  ✅ Klustret kör Talos $cluster_version"
         fi
 
-        # Ta bort fält som kan orsaka problem vid ominstallation
+        # Ta bort fält som är SPECIFIKA för referens-noden och inte ska kopieras
+        # VIKTIGT: Varje nod behöver sin egen VIP och sin egen machine.token
         if command -v yq &> /dev/null; then
             # Ta bort cluster.discovery (kräver discovery service secret som inte finns)
             yq -y 'del(.cluster.discovery) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
             # Ta bort refreshInterval
             yq -y 'del(.cluster.refreshInterval) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+            # Ta bort VIP — varje nod har sin egen VIP (load balancer), inte referens-nodens
+            # VIP:n sätts automatiskt av Talos baserat på /network/interfaces om den inte finns här
+            yq -y 'del(.machine.network.interfaces[0].vip) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+            echo "  ✅ Tog bort referens-nodens VIP från config (varje nod behöver sin egen)"
+            # Ta bort machine.token — varje node har sin egen unika token för Kubelet-auth
+            yq -y 'del(.machine.token) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+            echo "  ✅ Tog bort referens-nodens machine.token (varje nod har egen token)"
+            
+            # Om vi installerar en worker men referensen var en controlplane, ta bort controlplane-specifika fält
+            if [ "$role" = "worker" ] && [ "$reference_role" = "controlplane" ]; then
+                echo "  ℹ️  Konverterar controlplane-config till worker-config..."
+                # Ta bort controlplane-specifika fält
+                yq -y 'del(.cluster.apiServerArgs) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+                yq -y 'del(.cluster.controllerManagerArgs) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+                yq -y 'del(.cluster.schedulerArgs) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+                yq -y 'del(.cluster.etcdArgs) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+                yq -y 'del(.cluster.localApiServerEndpoint) 2>/dev/null' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+                echo "  ✅ Tog bort controlplane-specifika fält (apiServerArgs, controllerManagerArgs, schedulerArgs, etcdArgs)"
+            fi
+            # Uppdatera installer image till klustrets version
+            if [ -n "$cluster_version" ]; then
+                yq -y '.machine.install.image = "ghcr.io/siderolabs/installer:'"$cluster_version"'"' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+                echo "  ✅ Uppdaterade installer image till $cluster_version"
+            fi
+            # Sätt hostname
+            yq -y '.machine.network.hostname = "'$node_name'"' "$config_file" > "$config_file.tmp" 2>/dev/null && mv "$config_file.tmp" "$config_file" || true
+            echo "  ✅ Sätter hostname till $node_name"
         fi
 
         echo "Config förberedd för noden $node_ip"
@@ -421,37 +511,82 @@ main_talos_update_config() {
             continue
         fi
 
-        # Nu är config_file redan en referens till reference_config.yaml (som är enskild YAML)
-        # Så vi behöver inte konvertera
-
-        # Om diskSelector finns i patch, ta bort 'disk' för att undvika konflikt
-        if [ -f "patches/nodes/$node_name.yaml" ]; then
-            if command -v yq &> /dev/null; then
-                has_disk=$(yq '.machine.install.disk' "$config_file" 2>/dev/null | grep -q 'null' && echo "no" || echo "yes")
-                has_disk_selector=$(yq '.machine.install.diskSelector' "$config_file" 2>/dev/null | grep -q 'null' && echo "no" || echo "yes")
-
-                if [ "$has_disk" = "yes" ] && [ "$has_disk_selector" = "yes" ]; then
-                    echo "🧹 Tar bort disk (diskSelector finns också i config)..."
-                    yq 'del(.machine.install.disk)' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
-                    echo "✅ disk borttagen, diskSelector behålls"
-                elif [ "$has_disk" = "yes" ]; then
-                    echo "🧹 Tar bort disk från config..."
-                    yq 'del(.machine.install.disk)' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
-                    echo "✅ disk borttagen"
+        # Kontrollera om det finns flera YAML-dokument (multi-doc)
+        local doc_count
+        doc_count=$(grep -c '^---$' "$config_file" 2>/dev/null || true)
+        if [ -z "$doc_count" ]; then
+            doc_count=0
+        fi
+        
+        echo "📝 Applicerar konfiguration på $node_name..."
+        
+        if [ "${doc_count:-0}" -gt 0 ]; then
+            echo "  ℹ️  Multi-document YAML detected ($doc_count dokument), splittar och applicerar separat..."
+            
+            # Extrahera MachineConfig (första dokumentet)
+            local machine_config="$config_dir/machine_config_$node_name.yaml"
+            awk '/^---$/{exit} {print}' "$config_file" > "$machine_config"
+            
+            # Applicera MachineConfig
+            if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$machine_config" 2>&1; then
+                echo "  ✅ MachineConfig applicerad"
+            else
+                echo "  ❌ MachineConfig misslyckades"
+                echo "-----------------------------"
+                continue
+            fi
+            
+            # Extrahera och applicera UserVolumeConfigs
+            local vol_configs=$(grep -n '^---$' "$config_file" | tail -n +2 | cut -d: -f1)
+            if [ -n "$vol_configs" ]; then
+                local line_start=1
+                local vol_num=1
+                for line_end in $vol_configs; do
+                    local vol_config="$config_dir/volume_config_${vol_num}_$node_name.yaml"
+                    sed -n "${line_start},$((line_end-1))p" "$config_file" | sed '1d' > "$vol_config"
+                    
+                    if [ -s "$vol_config" ]; then
+                        local vol_name=$(yq -r '.name' "$vol_config" 2>/dev/null || echo "vol$vol_num")
+                        echo "  📝 Applicerar UserVolumeConfig: $vol_name..."
+                        if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$vol_config" 2>&1; then
+                            echo "  ✅ $vol_name applicerad"
+                        else
+                            echo "  ⚠️  $vol_name misslyckades"
+                        fi
+                    fi
+                    vol_num=$((vol_num + 1))
+                    line_start=$line_end
+                done
+                # Sista dokumentet
+                local last_line=$(wc -l < "$config_file")
+                local vol_config="$config_dir/volume_config_${vol_num}_$node_name.yaml"
+                sed -n "${line_start},${last_line}p" "$config_file" | sed '1d' > "$vol_config"
+                if [ -s "$vol_config" ]; then
+                    local vol_name=$(yq -r '.name' "$vol_config" 2>/dev/null || echo "vol$vol_num")
+                    echo "  📝 Applicerar UserVolumeConfig: $vol_name..."
+                    if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$vol_config" 2>&1; then
+                        echo "  ✅ $vol_name applicerad"
+                    else
+                        echo "  ⚠️  $vol_name misslyckades"
+                    fi
                 fi
+            fi
+            
+            echo "✅ Alla konfigurationsdokument applicerade"
+        else
+            # Enkelt dokument, applicera direkt
+            if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$config_file" 2>&1; then
+                echo "✅ Konfiguration applicerad med hostname $node_name!"
+            else
+                echo "❌ Kunde inte applicera konfiguration"
+                echo "-----------------------------"
+                continue
             fi
         fi
 
-        echo "📝 Applicerar konfiguration på $node_name..."
-        if talosctl apply-config --insecure --nodes "$node_ip" --file "$config_file" 2>&1; then
-
-            echo "✅ Konfiguration applicerad med hostname $node_name!"
-            echo "ℹ️  Noden startas om och hostname kommer att sättas."
-            yq -i -o y '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || \
-            yq -i '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || true
-        else
-            echo "❌ Kunde inte applicera konfiguration"
-        fi
+        echo "ℹ️  Noden startas om och hostname kommer att sättas."
+        yq -i -o y '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || \
+        yq -i '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || true
 
         echo "-----------------------------"
     done
