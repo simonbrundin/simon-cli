@@ -27,6 +27,57 @@ convert_ndjson_to_yaml() {
     fi
 }
 
+resolve_talos_infrastructure_repo() {
+    local configured_repo="${INFRA_REPO:-}"
+    local current_repo
+
+    if [ -n "$configured_repo" ]; then
+        if [ -f "$configured_repo/talos/nodes.yaml" ]; then
+            printf '%s\n' "$configured_repo"
+            return 0
+        fi
+        echo "Infrastructure-repo saknas eller saknar talos/nodes.yaml: $configured_repo" >&2
+        return 1
+    fi
+
+    current_repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -f "$current_repo/talos/nodes.yaml" ]; then
+        printf '%s\n' "$current_repo"
+        return 0
+    fi
+
+    if [ -f "$HOME/repos/infrastructure/talos/nodes.yaml" ]; then
+        printf '%s\n' "$HOME/repos/infrastructure"
+        return 0
+    fi
+
+    echo "Kunde inte hitta ett infrastructure-repo med talos/nodes.yaml" >&2
+    return 1
+}
+
+extract_machine_config_spec() {
+    local raw_config_file="$1"
+    local extracted_config_file="$2"
+
+    [ -f "$raw_config_file" ] || return 1
+
+    awk '
+        /^[[:space:]]*spec: \|$/ { in_spec=1; next }
+        in_spec {
+            if ($0 !~ /^[[:space:]]/ && $0 !~ /^[[:space:]]*$/) exit
+            if (!indent_set && $0 ~ /[^[:space:]]/) {
+                match($0, /^[[:space:]]*/)
+                indent=RLENGTH
+                indent_set=1
+            }
+            if (indent_set && length($0) >= indent) print substr($0, indent + 1)
+            else print
+        }
+    ' "$raw_config_file" > "$extracted_config_file"
+
+    [ -s "$extracted_config_file" ]
+}
+
 main_talos_dashboard() {
     ip="${1:-10.10.10.11}"
     
@@ -115,19 +166,35 @@ main_talos_upgrade() {
 }
 
 main_talos_update_config() {
-    nodnamn="$1"
-    cd /home/simon/repos/infrastructure/talos || return
+    local target_node_name="$1"
+    local infra_repo
+
+    if ! infra_repo=$(resolve_talos_infrastructure_repo); then
+        echo "❌ Kunde inte hitta infrastructure-repo"
+        return 1
+    fi
+
+    cd "$infra_repo/talos" || return 1
+    echo "Använder infrastructure-repo: $infra_repo"
 
     mkdir -p ~/.op
     chmod 700 ~/.op
-    op signin --raw > ~/.op/session
-    op read op://talos/secrets/secrets.yaml -o secrets.yaml -f
-    op read op://talos/talosconfig/talosconfig -o talosconfig -f
-    chmod 666 secrets.yaml talosconfig
+    if ! op signin --raw > ~/.op/session; then
+        echo "❌ Kunde inte logga in med 1Password. Avbryter utan ändringar."
+        return 1
+    fi
+    if ! op read op://talos/secrets/secrets.yaml -o secrets.yaml -f || \
+        ! op read op://talos/talosconfig/talosconfig -o talosconfig -f; then
+        echo "❌ Kunde inte läsa Talos-konfigurationen från 1Password. Avbryter utan ändringar."
+        return 1
+    fi
+    chmod 600 secrets.yaml talosconfig
 
-    cluster_name="cluster1"
-    endpoint="https://10.10.10.10:6443"
-    config_dir="generated"
+    local config_dir
+    config_dir=$(mktemp -d "${TMPDIR:-/tmp}/simon-talos-config.XXXXXX") || {
+        echo "❌ Kunde inte skapa temporär katalog för Talos-konfigurationen"
+        return 1
+    }
     controlplane_ip=$(yq '.nodes[] | select(.role == "controlplane") | .ip' nodes.yaml | head -1 | tr -d '"')
 
     # Använd systemets talosconfig om den finns och fungerar
@@ -135,7 +202,7 @@ main_talos_update_config() {
     if [ -f "$HOME/.talos/config" ]; then
         echo "Använder systemets talosconfig från ~/.talos/config"
         cp "$HOME/.talos/config" ./talosconfig
-        chmod 666 talosconfig
+        chmod 600 talosconfig
     fi
     
     export TALOSCONFIG=./talosconfig
@@ -178,29 +245,24 @@ main_talos_update_config() {
     # k8s_version_flag="--kubernetes-version $k8s_version"
 
     # Get list of node names to process
-    if [ -z "$nodnamn" ]; then
+    if [ -z "$target_node_name" ]; then
         echo "Uppdaterar alla noder..."
         node_names=$(yq '.nodes[].name' nodes.yaml)
     else
-        if ! yq ".nodes[] | select(.name == \"$nodnamn\")" nodes.yaml | grep -q .; then
-            echo "Ingen nod med namn $nodnamn hittades."
-            return
+        if ! yq ".nodes[] | select(.name == \"$target_node_name\")" nodes.yaml | grep -q .; then
+            echo "Ingen nod med namn $target_node_name hittades."
+            return 1
         fi
-        echo "Uppdaterar endast noden $nodnamn..."
-        node_names="$nodnamn"
+        echo "Uppdaterar endast noden $target_node_name..."
+        node_names="$target_node_name"
     fi
-
-    if [ -d "$config_dir" ]; then
-        rm -rf "$config_dir"
-    fi
-    mkdir "$config_dir"
 
     echo "$node_names" | while IFS= read -r node_name; do
         # Get node data using the name
         node_name=$(echo "$node_name" | tr -d '"')
         node_ip=$(yq ".nodes[] | select(.name == \"$node_name\") | .ip" nodes.yaml | tr -d '"')
         role=$(yq ".nodes[] | select(.name == \"$node_name\") | .role" nodes.yaml | tr -d '"')
-        initialized=$(yq ".nodes[] | select(.name == \"$node_name\") | .initialized" nodes.yaml | tr -d '"')
+        local reference_ip="$controlplane_ip"
         
         echo "Bearbetar nod: $node_name med IP $node_ip"
 
@@ -219,13 +281,11 @@ main_talos_update_config() {
 
         # Kontrollera om noden svarar på talosctl-kommandon (TLS-certifikatkontroll)
         echo "Kontrollerar Talos-anslutning..."
-        node_has_tls_error=false
         node_in_maintenance=false
 
         if ! talosctl --talosconfig talosconfig version -n "$node_ip" --short >/dev/null 2>&1; then
             tls_error=$(talosctl --talosconfig talosconfig version -n "$node_ip" --short 2>&1 | grep -i "certificate\|tls\|auth" || echo "")
             if [ -n "$tls_error" ]; then
-                node_has_tls_error=true
                 echo "⚠️  TLS-fel vid anslutning till $node_name ($node_ip)"
                 echo "   Försöker med --insecure för att kontrollera om noden är i maintenance mode..."
 
@@ -291,18 +351,25 @@ main_talos_update_config() {
             # Hämta nodens egen config och visa viktiga fält
             echo "📝 Hämtar nodens nuvarande config..."
             local node_config_tmp="$config_dir/node_config_$node_name.yaml"
-            talosctl --talosconfig talosconfig get machineconfig -o yaml -n "$node_ip" 2>/dev/null | \
-                sed '1,/^spec:/d' | sed 's/^    /  /g' > "$node_config_tmp" || {
+            local node_config_raw="$node_config_tmp.raw"
+            if ! talosctl --talosconfig talosconfig get machineconfig -o yaml -n "$node_ip" > "$node_config_raw" 2>/dev/null; then
                 echo "  ⚠️ Kunde inte hämta nodens config, hoppar över..."
                 echo "-----------------------------"
                 continue
-            }
+            fi
+            if ! extract_machine_config_spec "$node_config_raw" "$node_config_tmp"; then
+                rm -f "$node_config_raw" "$node_config_tmp"
+                echo "  ⚠️ Nodens config innehöll ingen användbar spec, hoppar över..."
+                echo "-----------------------------"
+                continue
+            fi
+            rm "$node_config_raw"
 
             # Verifiera kritiska fält i nodens egen config
-            local node_vip node_hostname node_token cluster_token node_install_image
-            node_vip=$(yq '.machine.network.interfaces[0].vip // empty' "$node_config_tmp" 2>/dev/null)
-            node_hostname=$(yq '.machine.network.hostname' "$node_config_tmp" 2>/dev/null)
-            node_install_image=$(yq '.machine.install.image // empty' "$node_config_tmp" 2>/dev/null)
+            local node_vip node_hostname node_install_image
+            node_vip=$(yq -r 'select(.machine != null) | .machine.network.interfaces[0].vip // empty' "$node_config_tmp" 2>/dev/null | head -1)
+            node_hostname=$(yq -r 'select(.machine != null) | .machine.network.hostname // empty' "$node_config_tmp" 2>/dev/null | head -1)
+            node_install_image=$(yq -r 'select(.machine != null) | .machine.install.image // empty' "$node_config_tmp" 2>/dev/null | head -1)
 
             echo "  ✅ Hämtad config för $node_name (hostname=$node_hostname, vip=${node_vip:-<ej satt>}, install=${node_install_image:-<default>})"
 
@@ -329,29 +396,29 @@ main_talos_update_config() {
             fi
 
             # Applicera UserVolumeConfigs separat (Talos stödjer inte multi-doc patch)
-            # Kolla i ny struktur: patches/workers/<nod>/disks/*.yaml
+            # Kolla i nodens egna struktur: patches/workers/<nod>/disks/*.yaml
             local disk_dir="patches/workers/$node_name/disks"
             if [ -d "$disk_dir" ]; then
-                volume_count=$(find "$disk_dir" -name "*.yaml" 2>/dev/null | wc -l | tr -d ' ')
+                local volume_count
+                volume_count=$(find "$disk_dir" -maxdepth 1 -name "*.yaml" -type f 2>/dev/null | wc -l | tr -d ' ')
                 if [ "$volume_count" -gt 0 ]; then
                     echo "📝 Applicerar UserVolumeConfigs från $disk_dir..."
 
-                    applied=0
-                    failed=0
-                    for volume_file in "$disk_dir"/*.yaml; do
-                        volume_name=$(yq -r '.name' "$volume_file" 2>/dev/null)
+                    local failed=0
+                    local volume_file volume_name
+                    while IFS= read -r volume_file; do
+                        volume_name=$(yq -r '.name // "<namnlös>"' "$volume_file" 2>/dev/null)
 
                         if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
                             --patch "@$volume_file" --mode no-reboot 2>/dev/null; then
                             echo "  ✅ $volume_name applicerad"
-                            applied=$((applied + 1))
                         else
                             echo "  ⚠️ $volume_name misslyckades"
                             failed=$((failed + 1))
                         fi
-                    done
+                    done < <(find "$disk_dir" -maxdepth 1 -name "*.yaml" -type f -print | sort)
 
-                    if [ $failed -eq 0 ]; then
+                    if [ "$failed" -eq 0 ]; then
                         echo "  ✅ UserVolumeConfigs applicerade"
                     else
                         echo "  ⚠️ $failed UserVolumeConfig(s) misslyckades"
@@ -359,30 +426,46 @@ main_talos_update_config() {
                 fi
             fi
 
-            # Applicera hostname om det inte matchar
+            # Uppdatera hostname om det inte matchar. YAML-patch används i
+            # stället för JSON6902 eftersom nodens config kan vara multi-doc.
             if [ "$node_hostname" != "$node_name" ]; then
                 echo "📝 Uppdaterar hostname: $node_name..."
+                local hostname_patch="$config_dir/hostname_patch_$node_name.yaml"
+                cat > "$hostname_patch" <<EOF
+machine:
+  network:
+    hostname: "$node_name"
+EOF
                 if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
-                    --patch "[{\"op\": \"add\", \"path\": \"/machine/network/hostname\", \"value\": \"$node_name\"}]" \
-                    --mode no-reboot 2>&1 | grep -v "skipped"; then
+                    --patch "@$hostname_patch" --mode no-reboot 2>&1; then
                     echo "  ✅ Hostname uppdaterad"
+                else
+                    echo "  ❌ Hostname kunde inte uppdateras"
                 fi
             fi
 
-            # Applicera diskSelector om den finns i patch
+            # Applicera diskSelector från nodens patch. YAML-patch undviker
+            # JSON6902-felet på multi-document machineconfig.
             local disk_serial=""
-            if [ -f "patches/nodes/$node_name.yaml" ]; then
-                disk_serial=$(grep "serial:" "patches/nodes/$node_name.yaml" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+            local node_patch="patches/workers/$node_name/patch.yaml"
+            if [ -f "$node_patch" ]; then
+                disk_serial=$(yq -r '.machine.install.diskSelector.serial // empty' "$node_patch" 2>/dev/null)
             fi
             if [ -n "$disk_serial" ]; then
                 echo "📝 Lägger till diskSelector (serial: $disk_serial)..."
-                talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
-                    --patch '[{"op": "add", "path": "/machine/install/diskSelector/serial", "value": "'"$disk_serial"'"}]' \
-                    --mode no-reboot 2>/dev/null || \
-                talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
-                    --patch '[{"op": "replace", "path": "/machine/install/diskSelector/serial", "value": "'"$disk_serial"'"}]' \
-                    --mode no-reboot 2>/dev/null || true
-                echo "  ✅ diskSelector applicerad"
+                local disk_patch="$config_dir/disk_patch_$node_name.yaml"
+                cat > "$disk_patch" <<EOF
+machine:
+  install:
+    diskSelector:
+      serial: "$disk_serial"
+EOF
+                if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                    --patch "@$disk_patch" --mode no-reboot 2>&1; then
+                    echo "  ✅ diskSelector applicerad"
+                else
+                    echo "  ❌ diskSelector kunde inte appliceras"
+                fi
             fi
 
             # Uppdatera installer image om det behövs
@@ -424,7 +507,7 @@ main_talos_update_config() {
         echo "📝 Installerar noden $node_name i maintenance mode..."
 
         # Hämta referens-nod baserat på roll
-        local reference_ip="$controlplane_ip"
+        reference_ip="$controlplane_ip"
         local reference_role="controlplane"
         
         if [ "$role" = "worker" ]; then
@@ -449,14 +532,33 @@ main_talos_update_config() {
             continue
         }
         
-        # Extrahera spec-fältet (tar bort metadata-wrapper)
-        # Output är i Kubernetes resource format: spec: | (block scalar)
-        # Vi tar allt från 'spec: |' till nästa dokument ('---') eller filslut
-        awk '/^spec: \|$/,/^---$/{ if (/^---$/) exit; if (!/^spec: \|$/) print }' "$reference_config.raw" | sed 's/^    //' > "$reference_config"
+        # Extrahera spec-fältet och normalisera YAML-indenteringen.
+        if ! extract_machine_config_spec "$reference_config.raw" "$reference_config"; then
+            rm -f "$reference_config.raw" "$reference_config"
+            echo "❌ Referensnodens konfiguration saknade en användbar spec"
+            echo "-----------------------------"
+            continue
+        fi
         rm "$reference_config.raw"
 
-        # Använd referens-config som bas
-        config_file="$reference_config"
+        local node_patch="patches/${role}s/$node_name/patch.yaml"
+        if [ ! -f "$node_patch" ]; then
+            echo "❌ Saknar nodspecifik patch: $node_patch"
+            echo "   Avbryter för att inte installera med referensnodens diskSelector."
+            echo "-----------------------------"
+            continue
+        fi
+
+        # Använd endast MachineConfig-dokumentet från referensen och lägg på
+        # nodens egna patch. UserVolumeConfigs appliceras separat nedan.
+        local config_file="$config_dir/machine_config_$node_name.yaml"
+        awk '/^---$/{exit} {print}' "$reference_config" > "$config_file"
+        yq -y --slurp '.[0] * .[1]' \
+            "$config_file" "$node_patch" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file" || {
+            echo "❌ Kunde inte lägga nodpatchen $node_patch på MachineConfig"
+            echo "-----------------------------"
+            continue
+        }
 
         # Hämta klustrets Talos-version för att sätta rätt installer image
         local cluster_version
@@ -511,78 +613,74 @@ main_talos_update_config() {
             continue
         fi
 
-        # Kontrollera om det finns flera YAML-dokument (multi-doc)
-        local doc_count
-        doc_count=$(grep -c '^---$' "$config_file" 2>/dev/null || true)
-        if [ -z "$doc_count" ]; then
-            doc_count=0
-        fi
-        
         echo "📝 Applicerar konfiguration på $node_name..."
-        
-        if [ "${doc_count:-0}" -gt 0 ]; then
-            echo "  ℹ️  Multi-document YAML detected ($doc_count dokument), splittar och applicerar separat..."
-            
-            # Extrahera MachineConfig (första dokumentet)
-            local machine_config="$config_dir/machine_config_$node_name.yaml"
-            awk '/^---$/{exit} {print}' "$config_file" > "$machine_config"
-            
-            # Applicera MachineConfig
-            if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$machine_config" 2>&1; then
-                echo "  ✅ MachineConfig applicerad"
-            else
-                echo "  ❌ MachineConfig misslyckades"
-                echo "-----------------------------"
-                continue
-            fi
-            
-            # Extrahera och applicera UserVolumeConfigs
-            local vol_configs=$(grep -n '^---$' "$config_file" | tail -n +2 | cut -d: -f1)
-            if [ -n "$vol_configs" ]; then
-                local line_start=1
-                local vol_num=1
-                for line_end in $vol_configs; do
-                    local vol_config="$config_dir/volume_config_${vol_num}_$node_name.yaml"
-                    sed -n "${line_start},$((line_end-1))p" "$config_file" | sed '1d' > "$vol_config"
-                    
-                    if [ -s "$vol_config" ]; then
-                        local vol_name=$(yq -r '.name' "$vol_config" 2>/dev/null || echo "vol$vol_num")
-                        echo "  📝 Applicerar UserVolumeConfig: $vol_name..."
-                        if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$vol_config" 2>&1; then
-                            echo "  ✅ $vol_name applicerad"
-                        else
-                            echo "  ⚠️  $vol_name misslyckades"
-                        fi
-                    fi
-                    vol_num=$((vol_num + 1))
-                    line_start=$line_end
-                done
-                # Sista dokumentet
-                local last_line=$(wc -l < "$config_file")
-                local vol_config="$config_dir/volume_config_${vol_num}_$node_name.yaml"
-                sed -n "${line_start},${last_line}p" "$config_file" | sed '1d' > "$vol_config"
-                if [ -s "$vol_config" ]; then
-                    local vol_name=$(yq -r '.name' "$vol_config" 2>/dev/null || echo "vol$vol_num")
-                    echo "  📝 Applicerar UserVolumeConfig: $vol_name..."
-                    if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$vol_config" 2>&1; then
-                        echo "  ✅ $vol_name applicerad"
-                    else
-                        echo "  ⚠️  $vol_name misslyckades"
-                    fi
-                fi
-            fi
-            
-            echo "✅ Alla konfigurationsdokument applicerade"
-        else
-            # Enkelt dokument, applicera direkt
-            if talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$config_file" 2>&1; then
-                echo "✅ Konfiguration applicerad med hostname $node_name!"
-            else
-                echo "❌ Kunde inte applicera konfiguration"
-                echo "-----------------------------"
-                continue
-            fi
+
+        # MachineConfig måste appliceras först i maintenance mode. Därefter
+        # kräver Talos klientcertifikat, så UserVolumeConfigs appliceras med
+        # den riktiga talosconfig-filen och inte med --insecure.
+        if ! talosctl apply-config --insecure --nodes "$node_ip" --mode=auto --file "$config_file" 2>&1; then
+            echo "❌ MachineConfig misslyckades"
+            echo "-----------------------------"
+            continue
         fi
+        echo "  ✅ MachineConfig applicerad"
+
+        # Applicera endast nodens egna UserVolumeConfigs. Referensnodens
+        # UserVolumeConfigs har medvetet aldrig kopierats till config_file.
+        local disk_dir="patches/${role}s/$node_name/disks"
+        local volume_files=()
+        if [ -d "$disk_dir" ]; then
+            shopt -s nullglob
+            volume_files=("$disk_dir"/*.yaml)
+            shopt -u nullglob
+        fi
+
+        local failed_volume_configs=0
+        local volume_file volume_name volume_kind
+        if [ "${#volume_files[@]}" -gt 0 ]; then
+            echo "  📝 Applicerar ${#volume_files[@]} UserVolumeConfig(s) från $disk_dir..."
+            for volume_file in "${volume_files[@]}"; do
+                volume_kind=$(yq -r '.kind // empty' "$volume_file" 2>/dev/null)
+                volume_name=$(yq -r '.name // "<namnlös>"' "$volume_file" 2>/dev/null)
+
+                if [ "$volume_kind" != "UserVolumeConfig" ] || [ "$volume_name" = "<namnlös>" ]; then
+                    echo "  ❌ Ogiltig UserVolumeConfig-fil: $volume_file"
+                    failed_volume_configs=$((failed_volume_configs + 1))
+                    continue
+                fi
+
+                echo "  📝 Applicerar UserVolumeConfig: $volume_name..."
+                local volume_applied=false
+                local attempt
+                for attempt in 1 2 3; do
+                    if talosctl --talosconfig talosconfig patch machineconfig --nodes "$node_ip" \
+                        --patch "@$volume_file" --mode no-reboot 2>&1; then
+                        volume_applied=true
+                        break
+                    fi
+                    if [ "$attempt" -lt 3 ]; then
+                        echo "  ℹ️ API:t är inte redo, försöker igen ($((attempt + 1))/3)..."
+                        sleep 2
+                    fi
+                done
+
+                if [ "$volume_applied" = true ]; then
+                    echo "  ✅ $volume_name applicerad"
+                else
+                    echo "  ❌ $volume_name misslyckades efter 3 försök"
+                    failed_volume_configs=$((failed_volume_configs + 1))
+                fi
+            done
+        fi
+
+        if [ "$failed_volume_configs" -gt 0 ]; then
+            echo "❌ MachineConfig applicerad, men $failed_volume_configs UserVolumeConfig(s) misslyckades."
+            echo "   Noden markeras inte som färdig. Kontrollera certifikat/API och kör om efter åtgärd."
+            echo "-----------------------------"
+            continue
+        fi
+
+        echo "✅ MachineConfig och alla nodspecifika UserVolumeConfigs applicerade"
 
         echo "ℹ️  Noden startas om och hostname kommer att sättas."
         yq -i -o y '.nodes[] |= select(.name == "'$node_name'") | .initialized = true' nodes.yaml 2>/dev/null || \
@@ -591,10 +689,12 @@ main_talos_update_config() {
         echo "-----------------------------"
     done
 
-    if [ -z "$nodnamn" ]; then
+    rm -rf "$config_dir"
+
+    if [ -z "$target_node_name" ]; then
         message="Konfiguration har applicerats på alla noder."
     else
-        message="Konfiguration har applicerats på noden $nodnamn."
+        message="Konfiguration har applicerats på noden $target_node_name."
     fi
     echo "$message"
     rm -f secrets.yaml
