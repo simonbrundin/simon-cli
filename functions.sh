@@ -1,18 +1,17 @@
 #!/bin/bash
 
-# Bash equivalent of fzfSelect from functions.nu
-# Takes a list of options as arguments, runs fzf --multi, and returns the selection(s)
+# Returns one selected line by default; pass --multi to preserve multiple lines.
 fzfSelect() {
+    local multi=false
+    if [ "${1:-}" = "--multi" ]; then
+        multi=true
+        shift
+    fi
+
     local list=("$@")
-    local selection
-
-    # Join list with newlines, pipe to fzf --multi, then get lines
-    selection=$(printf '%s\n' "${list[@]}" | fzf --multi)
-
-    # If selection has one line, return it; else return as array (but Bash returns string)
-    # For simplicity, return space-separated if multiple, or single
-    local result
-    result=$(echo "$selection" | tr '\n' ' ' | sed 's/ $//')
-
-    echo "$result"
+    if [ "$multi" = true ]; then
+        printf '%s\n' "${list[@]}" | fzf --multi
+    else
+        printf '%s\n' "${list[@]}" | fzf
+    fi
 }
