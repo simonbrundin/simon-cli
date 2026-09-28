@@ -7,38 +7,75 @@ main_k() {
 	echo "Kubernetes alias"
 }
 
+prompt_for_kubernetes_context() {
+	local contexts selected_context fzf_status
+
+	command -v kubectl >/dev/null 2>&1 || { echo "❌ kubectl saknas" >&2; return 1; }
+	command -v fzf >/dev/null 2>&1 || { echo "❌ fzf saknas" >&2; return 1; }
+
+	if ! contexts=$(kubectl config get-contexts -o name); then
+		echo "❌ Kunde inte hämta Kubernetes-contexts" >&2
+		return 1
+	fi
+	[ -n "$contexts" ] || { echo "❌ Inga Kubernetes-contexts hittades" >&2; return 1; }
+
+	selected_context=$(printf '%s\n' "$contexts" | fzf --prompt='Kubernetes context> ')
+	fzf_status=$?
+	case "$fzf_status" in
+		0) ;;
+		1|130) echo "Ingen context vald. Avbryter." >&2; return 130 ;;
+		*) echo "❌ fzf misslyckades (status $fzf_status)" >&2; return 1 ;;
+	esac
+	[ -n "$selected_context" ] || { echo "Ingen context vald. Avbryter." >&2; return 130; }
+	printf '%s\n' "$selected_context"
+}
+
+main_kubernetes_switch() {
+	local selected_context selection_status
+	selected_context=$(prompt_for_kubernetes_context)
+	selection_status=$?
+	[ "$selection_status" -eq 130 ] && return 0
+	[ "$selection_status" -eq 0 ] || return 1
+
+	if ! kubectl config use-context "$selected_context"; then
+		echo "❌ Kunde inte byta till context: $selected_context" >&2
+		return 1
+	fi
+}
+
 main_kubernetes_login_certificate() {
-	clustername="${1:-}"
+	local kubeconfig_content config_dir temporary_kubeconfig kubeconfig_path
+	local bashrc bashrc_temp kubeconfig_export
 
 	echo -e "\033[34m🔐 Loggar in i 1Password...\033[0m"
 
-	# Ensure ~/.op directory exists with correct permissions
-	mkdir -p ~/.op
-	chmod 700 ~/.op
+	mkdir -p "$HOME/.op" || return 1
+	chmod 700 "$HOME/.op" || return 1
 
-	# Check for existing valid session first
-	if [ -f ~/.op/session ] && [ -s ~/.op/session ]; then
-		export OP_SESSION_TOKEN=$(cat ~/.op/session)
+	if [ -f "$HOME/.op/session" ] && [ -s "$HOME/.op/session" ]; then
+		OP_SESSION_TOKEN=$(<"$HOME/.op/session")
+		export OP_SESSION_TOKEN
 		if ! op whoami &>/dev/null; then
-			# Session expired, get new one
-			op signin --raw >~/.op/session 2>/dev/null
-			export OP_SESSION_TOKEN=$(cat ~/.op/session)
+			op signin --raw >"$HOME/.op/session" 2>/dev/null || return 1
+			chmod 600 "$HOME/.op/session"
+			OP_SESSION_TOKEN=$(<"$HOME/.op/session")
+			export OP_SESSION_TOKEN
 		fi
 	else
-		# No session file, create new session
-		op signin --raw >~/.op/session 2>/dev/null
-		export OP_SESSION_TOKEN=$(cat ~/.op/session)
+		op signin --raw >"$HOME/.op/session" 2>/dev/null || return 1
+		chmod 600 "$HOME/.op/session"
+		OP_SESSION_TOKEN=$(<"$HOME/.op/session")
+		export OP_SESSION_TOKEN
 	fi
 
 	if ! op whoami &>/dev/null; then
 		echo -e "\033[31m[ERROR]\033[0m Kunde inte logga in i 1Password."
-		rm -f ~/.op/session
+		rm -f "$HOME/.op/session"
 		return 1
 	fi
 
 	echo -e "\033[34m📄 Hämtar kubeconfig...\033[0m"
 	kubeconfig_content=$(op read "op://Talos/kubeconfig/kubeconfig" 2>/dev/null)
-
 	if [ -z "$kubeconfig_content" ]; then
 		echo -e "\033[31m[ERROR]\033[0m Kunde inte hämta kubeconfig från 1Password."
 		echo -e "\033[33mKontrollera:\033[0m"
@@ -47,22 +84,54 @@ main_kubernetes_login_certificate() {
 		return 1
 	fi
 
-	temp_kubeconfig="/tmp/kubeconfig-certificate"
-	echo -e "\033[34mSparar kubeconfig till:\033[0m \033[32m$temp_kubeconfig\033[0m"
-	echo "$kubeconfig_content" >"$temp_kubeconfig"
+	config_dir="$HOME/.config/simon"
+	mkdir -p "$config_dir" || return 1
+	chmod 700 "$config_dir" || return 1
+	temporary_kubeconfig=$(mktemp "$config_dir/kubeconfig.XXXXXX") || return 1
+	chmod 600 "$temporary_kubeconfig" || {
+		rm -f "$temporary_kubeconfig"
+		return 1
+	}
+	printf '%s\n' "$kubeconfig_content" >"$temporary_kubeconfig" || {
+		rm -f "$temporary_kubeconfig"
+		return 1
+	}
+	unset kubeconfig_content
 
-	if kubectl get nodes --kubeconfig "$temp_kubeconfig" &>/dev/null; then
-		bashrc="$HOME/.bashrc"
-		if grep -q "^export KUBECONFIG=" "$bashrc"; then
-			sed -i "s|^export KUBECONFIG=.*|export KUBECONFIG=$temp_kubeconfig|" "$bashrc"
-		else
-			echo "export KUBECONFIG=$temp_kubeconfig" >>"$bashrc"
-		fi
-		export KUBECONFIG="$temp_kubeconfig"
-		echo -e "\033[32mInloggning lyckades!\033[0m"
-	else
+	if ! kubectl get nodes --kubeconfig "$temporary_kubeconfig" &>/dev/null; then
 		echo -e "\033[31mInloggning misslyckades – kontrollera certifikat eller nätverk.\033[0m"
+		rm -f "$temporary_kubeconfig"
+		return 1
 	fi
+
+	kubeconfig_path="$config_dir/kubeconfig-certificate"
+	mv -f "$temporary_kubeconfig" "$kubeconfig_path" || {
+		rm -f "$temporary_kubeconfig"
+		return 1
+	}
+	chmod 600 "$kubeconfig_path" || return 1
+
+	bashrc="$HOME/.bashrc"
+	bashrc_temp=$(mktemp "$HOME/.bashrc.simon.XXXXXX") || return 1
+	if [ -f "$bashrc" ] && ! awk '!/^export KUBECONFIG=/' "$bashrc" >"$bashrc_temp"; then
+		rm -f "$bashrc_temp"
+		return 1
+	fi
+	printf -v kubeconfig_export 'export KUBECONFIG=%q' "$kubeconfig_path"
+	printf '%s\n' "$kubeconfig_export" >>"$bashrc_temp" || {
+		rm -f "$bashrc_temp"
+		return 1
+	}
+	if [ -f "$bashrc" ]; then
+		chmod --reference="$bashrc" "$bashrc_temp" 2>/dev/null || true
+	fi
+	mv "$bashrc_temp" "$bashrc" || {
+		rm -f "$bashrc_temp"
+		return 1
+	}
+
+	export KUBECONFIG="$kubeconfig_path"
+	echo -e "\033[32mInloggning lyckades!\033[0m"
 }
 
 main_kubernetes_login_teleport() {
@@ -170,14 +239,15 @@ main_kubernetes_remove_finalizers() {
 		done
 	done
 
-	selected_components=$(fzfSelect "${components[@]}")
+	selected_components=$(fzfSelect --multi "${components[@]}")
 
 	if [ -z "$selected_components" ]; then
 		echo "❌ Inga resurser valda. Avbryter."
 		return
 	fi
 
-	for selected_component in $selected_components; do
+	while IFS= read -r selected_component; do
+		[ -z "$selected_component" ] && continue
 		kind=$(echo "$selected_component" | cut -d'/' -f1)
 		name=$(echo "$selected_component" | cut -d'/' -f2)
 
@@ -197,7 +267,7 @@ main_kubernetes_remove_finalizers() {
 				echo "⚠️  Kunde inte bekräfta att finalizers tagits bort."
 			fi
 		fi
-	done
+	done <<< "$selected_components"
 }
 
 main_kubernetes_deleting() {
@@ -228,20 +298,21 @@ main_kubernetes_remove_selected() {
 		done
 	done
 
-	selected_components=$(fzfSelect "${components[@]}")
+	selected_components=$(fzfSelect --multi "${components[@]}")
 
 	if [ -z "$selected_components" ]; then
 		echo "❌ Inga resurser valda. Avbryter."
 		return
 	fi
 
-	for selected_component in $selected_components; do
+	while IFS= read -r selected_component; do
+		[ -z "$selected_component" ] && continue
 		kind=$(echo "$selected_component" | cut -d'/' -f1)
 		name=$(echo "$selected_component" | cut -d'/' -f2)
 
 		echo "🗑️  Raderar $kind/$name i namespace $selected_namespace..."
 		kubectl delete "$kind" "$name" -n "$selected_namespace"
-	done
+	done <<< "$selected_components"
 
 	echo "✅ Klart!"
 }
@@ -943,26 +1014,25 @@ main_kubernetes_health() {
 
 	handle_health_error() {
 		local msg="$1"
+		health_errors+=("$msg")
 		if [ "$mode" = "strict" ]; then
 			echo -e "\033[31m❌ $msg\033[0m"
 			return 1
-		else
-			echo -e "\033[31m⚠ $msg\033[0m"
-			health_errors+=("$msg")
-			return 0
 		fi
+		echo -e "\033[31m⚠ $msg\033[0m"
+		return 0
 	}
 
 	echo "🔍 Kubernetes Health Check"
 	echo "=========================="
 	if [ "$mode" = "strict" ]; then
-		echo "Mode: STRICT (abort on first error)"
+		echo "Mode: STRICT (fail when any check reports an error)"
 	else
 		echo "Mode: RELAXED (continue on errors, summarize at end)"
 	fi
 	echo ""
 
-	local required_commands=("ping" "talosctl" "kubectl" "yq")
+	local required_commands=("ping" "talosctl" "kubectl" "yq" "flux")
 	echo -e "\033[34mKontrollerar required tools...\033[0m"
 	for cmd in "${required_commands[@]}"; do
 		if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -1090,6 +1160,7 @@ main_kubernetes_health() {
 		fi
 		if [ "$line" = "flux cli not configured" ]; then
 			echo -e "  ${red}✗ flux cli not configured${reset}"
+			handle_health_error "Flux CLI is unavailable or not configured"
 			continue
 		fi
 		local name ready_status message
@@ -1115,6 +1186,7 @@ main_kubernetes_health() {
 	while IFS= read -r line; do
 		if [ "$line" = "flux cli not configured" ]; then
 			echo -e "  ${red}✗ flux cli not configured${reset}"
+			handle_health_error "Flux CLI is unavailable or not configured"
 			continue
 		fi
 		if [[ "$line" =~ ^NAME ]]; then
@@ -1145,6 +1217,7 @@ main_kubernetes_health() {
 	while IFS= read -r line; do
 		if [ "$line" = "flux cli not configured" ]; then
 			echo -e "  ${red}✗ flux cli not configured${reset}"
+			handle_health_error "Flux CLI is unavailable or not configured"
 			continue
 		fi
 		if [[ "$line" =~ ^NAME ]]; then
@@ -2234,164 +2307,179 @@ main_kubernetes_new() {
 	esac
 }
 
-format_secret_value() {
-	local key="$1"
-	local value="$2"
+read_kubernetes_secret_data() {
+	local -A secret_data=()
+	local key value key_base64 value_base64
 
-	if [ "$key" = ".dockerconfigjson" ]; then
-		if echo "$value" | jq -e . >/dev/null 2>&1; then
-			echo "    $key: |"
-			echo "$value" | jq -r '.' | sed 's/^/        /'
-		else
-			echo "    $key: $value"
-		fi
-	else
-		echo "    $key: $value"
-	fi
-}
-
-main_kubernetes_new_secret() {
-	echo -e "\033[34m🔐 Skapa ny Krypterad Kubernetes Secret\033[0m"
-	echo "============================================"
-	echo ""
-
-	echo -n "1. Ange hemlighetens namn: "
-	read -r secret_name
-	if [ -z "$secret_name" ]; then
-		echo -e "\033[31m❌ Namn är obligatoriskt\033[0m"
-		return 1
-	fi
-
-	echo ""
-	echo "2. Välj namespace:"
-	namespaces=$(kubectl get namespaces -o json | jq -r '.items[].metadata.name' | sort)
-	namespace=$(echo "$namespaces" | fzf --header="Välj namespace")
-	if [ -z "$namespace" ]; then
-		echo -e "\033[31m❌ Inget namespace valt\033[0m"
-		return 1
-	fi
-	echo -e "\033[32m✓ Namespace: $namespace\033[0m"
-
-	echo ""
-	echo "3. Ange key-value par (avsluta med 'done'):"
-	declare -A secret_data
 	while true; do
-		echo -n "   Nyckel: "
-		read -r key
-		if [ "$key" = "done" ]; then
-			break
+		if ! IFS= read -r -p "   Nyckel (done avslutar): " key; then
+			return 1
 		fi
-		if [ -z "$key" ]; then
+		[ "$key" = "done" ] && break
+		[ -z "$key" ] && continue
+		if [[ ! "$key" =~ ^[A-Za-z0-9._-]+$ ]]; then
+			echo "Ogiltig Secret-nyckel: $key" >&2
 			continue
 		fi
-		echo -n "   Värde: "
-		read -r value
+
+		if ! IFS= read -r -s -p "   Värde (dolt): " value; then
+			return 1
+		fi
+		printf '\n' >&2
 		secret_data["$key"]="$value"
-		echo ""
 	done
 
-	if [ ${#secret_data[@]} -eq 0 ]; then
-		echo -e "\033[31m❌ Minst ett key-value par krävs\033[0m"
+	if [ "${#secret_data[@]}" -eq 0 ]; then
+		echo "Minst ett key-value-par krävs." >&2
 		return 1
 	fi
 
-	echo ""
-	echo -e "\033[34m4. Förhandsvisning\033[0m"
-	echo "----------------------"
-	echo "Namn:     $secret_name"
-	echo "Namespace: $namespace"
-	echo "Data:"
 	for key in "${!secret_data[@]}"; do
-		echo "  $key: ${secret_data[$key]}"
+		key_base64=$(printf '%s' "$key" | base64 | tr -d '\n')
+		value_base64=$(printf '%s' "${secret_data[$key]}" | base64 | tr -d '\n')
+		printf '%s\t%s\n' "$key_base64" "$value_base64"
+	done | jq -R 'split("\t") | {(.[0] | @base64d): (.[1] | @base64d)}' | jq -s 'add'
+}
+
+update_kubernetes_secret_kustomization() {
+	local kustomization_file="$1"
+	local resource_name="$2"
+	local temporary_file="$3"
+
+	if grep -Fq -- "$resource_name" "$kustomization_file"; then
+		return 0
+	fi
+
+	if ! awk -v resource_name="$resource_name" '
+		{
+			trimmed = $0
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", trimmed)
+			if (trimmed == "- secrets.enc.yaml") {
+				print
+				print "  - " resource_name
+				added = 1
+				next
+			}
+			print
+		}
+		END { if (!added) exit 1 }
+	' "$kustomization_file" >"$temporary_file"; then
+		echo "Kunde inte hitta secrets.enc.yaml i $kustomization_file" >&2
+		return 1
+	fi
+
+	chmod --reference="$kustomization_file" "$temporary_file" 2>/dev/null || chmod 644 "$temporary_file"
+	mv "$temporary_file" "$kustomization_file"
+}
+
+main_kubernetes_new_secret() (
+	local secret_name namespace namespace_json data_json confirm
+	local infra_repo secrets_dir encrypted_name encrypted_file encrypted_temp
+	local kustomization_file kustomization_temp temp_dir relative_secret relative_kustomization
+	local dependency
+
+	umask 077
+	for dependency in kubectl jq fzf sops git; do
+		if ! command -v "$dependency" >/dev/null 2>&1; then
+			echo "❌ $dependency saknas" >&2
+			return 1
+		fi
 	done
 
-	echo ""
-	echo -n "5. Bekräfta och spara? [j/n]: "
-	read -r confirm
+	echo -e "\033[34m🔐 Skapa ny Krypterad Kubernetes Secret\033[0m"
+	printf '1. Ange hemlighetens namn: '
+	IFS= read -r secret_name || return 1
+	if [[ ! "$secret_name" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || [ "${#secret_name}" -gt 253 ]; then
+		echo "❌ Ogiltigt Secret-namn. Använd ett DNS-subdomain-namn med små bokstäver." >&2
+		return 1
+	fi
+
+	if ! namespace_json=$(kubectl get namespaces -o json) || \
+		! namespace=$(printf '%s' "$namespace_json" | jq -r '.items[].metadata.name' | sort | fzf --header="Välj namespace"); then
+		echo "❌ Namespace kunde inte hämtas eller val väl avbröts." >&2
+		return 1
+	fi
+	if [ -z "$namespace" ]; then
+		echo "❌ Inget namespace valt" >&2
+		return 1
+	fi
+
+	data_json=$(read_kubernetes_secret_data) || return 1
+	printf 'Förhandsvisning: Secret %s i namespace %s med nycklar:\n' "$secret_name" "$namespace"
+	printf '%s\n' "$data_json" | jq -r 'keys[] | "  " + .'
+	printf 'Spara, kryptera, committa och pusha? [j/n]: '
+	IFS= read -r confirm || return 1
 	if [ "$confirm" != "j" ] && [ "$confirm" != "J" ]; then
 		echo "Avbrutet."
 		return 0
 	fi
 
-	secret_file="/tmp/$secret_name.yaml"
-	cat >"$secret_file" <<EOF
-apiVersion: v1
-kind: Secret
-metadata:
-    name: $secret_name
-    namespace: $namespace
-stringData:
-EOF
-
-	for key in "${!secret_data[@]}"; do
-		format_secret_value "$key" "${secret_data[$key]}" >>"$secret_file"
-	done
-
-	echo ""
-	echo -e "\033[34m6. Krypterar med SOPS...\033[0m"
-
 	infra_repo="$HOME/repos/infrastructure"
-	if [ ! -f "$infra_repo/.sops.yaml" ]; then
-		echo -e "\033[31m❌ .sops.yaml hittades inte i $infra_repo\033[0m"
-		rm -f "$secret_file"
+	secrets_dir="$infra_repo/infrastructure-flux/components/secrets"
+	kustomization_file="$secrets_dir/kustomization.yaml"
+	if [ ! -f "$infra_repo/.sops.yaml" ] || [ ! -f "$kustomization_file" ]; then
+		echo "❌ SOPS- eller kustomization-konfiguration saknas i $infra_repo" >&2
+		return 1
+	fi
+	if ! git -C "$infra_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		echo "❌ $infra_repo är inte ett Git-repo." >&2
+		return 1
+	fi
+	if [ -n "$(git -C "$infra_repo" status --porcelain)" ]; then
+		echo "❌ Infrastructure-repot måste vara rent före automatisk commit/push." >&2
 		return 1
 	fi
 
-	cd "$infra_repo" || {
-		echo -e "\033[31m❌ Kunde inte byta till $infra_repo\033[0m"
-		rm -f "$secret_file"
-		return 1
-	}
-
-	encrypted_file="$infra_repo/infrastructure-flux/components/secrets/$secret_name.enc.yaml"
-	sops --encrypt "$secret_file" >"$encrypted_file" 2>/dev/null
-
-	if [ $? -ne 0 ]; then
-		echo -e "\033[31m❌ Kryptering misslyckades\033[0m"
-		rm -f "$secret_file"
-		cd - >/dev/null
+	encrypted_name="$secret_name.enc.yaml"
+	encrypted_file="$secrets_dir/$encrypted_name"
+	if [ -e "$encrypted_file" ] || [ -L "$encrypted_file" ]; then
+		echo "❌ Secret-filen finns redan: $encrypted_file" >&2
 		return 1
 	fi
 
-	rm -f "$secret_file"
+	temp_dir=$(mktemp -d "$infra_repo/.simon-secret.XXXXXX") || return 1
+	trap 'rm -rf -- "$temp_dir"' EXIT
+	chmod 700 "$temp_dir" || return 1
+	cd "$infra_repo" || return 1
+	local secret_file="$temp_dir/$secret_name.yaml"
+	encrypted_temp="$temp_dir/$encrypted_name"
+	kustomization_temp="$temp_dir/kustomization.yaml"
 
-	echo -e "\033[32m✓ Krypterad secret sparad till:\033[0m"
-	echo "  $encrypted_file"
-
-	echo ""
-	echo -e "\033[34m7. Uppdaterar kustomization.yaml...\033[0m"
-
-	kustomization_file="$infra_repo/infrastructure-flux/components/secrets/kustomization.yaml"
-	if grep -q "$secret_name.enc.yaml" "$kustomization_file"; then
-		echo -e "\033[33m⚠️ $secret_name.enc.yaml finns redan i kustomization.yaml\033[0m"
-	else
-		sed -i "/^- secrets.enc.yaml/a\\  - $secret_name.enc.yaml" "$kustomization_file"
-		echo -e "\033[32m✓ $secret_name.enc.yaml lades till i kustomization.yaml\033[0m"
-	fi
-
-	echo ""
-	echo -e "\033[34m8. Git add, commit och push...\033[0m"
-
-	git add "infrastructure-flux/components/secrets/$secret_name.enc.yaml"
-	git add "infrastructure-flux/components/secrets/kustomization.yaml"
-	git commit -m "feat: add $secret_name secret"
-
-	if [ $? -ne 0 ]; then
-		echo -e "\033[31m❌ Git commit misslyckades\033[0m"
-		cd - >/dev/null
+	if ! printf '%s' "$data_json" | jq -n --arg name "$secret_name" --arg namespace "$namespace" \
+		'{apiVersion:"v1", kind:"Secret", metadata:{name:$name, namespace:$namespace}, stringData:input}' \
+		>"$secret_file"; then
+		echo "❌ Kunde inte skapa Secret-manifestet" >&2
 		return 1
 	fi
 
-	git push
-
-	if [ $? -eq 0 ]; then
-		echo ""
-		echo -e "\033[32m✅ Klart! Secret $secret_name är skapad och pushad.\033[0m"
-		echo ""
-		echo "Flux kommer automatiskt plocka upp ändringen."
-	else
-		echo -e "\033[31m❌ Git push misslyckades\033[0m"
+	echo "Krypterar Secret med SOPS..."
+	if ! sops --encrypt "$secret_file" >"$encrypted_temp" 2>/dev/null || [ ! -s "$encrypted_temp" ]; then
+		echo "❌ Kryptering misslyckades" >&2
+		return 1
+	fi
+	mv -n "$encrypted_temp" "$encrypted_file"
+	if [ -e "$encrypted_temp" ] || [ ! -s "$encrypted_file" ]; then
+		echo "❌ Kunde inte skapa den krypterade filen utan att skriva över något" >&2
+		return 1
 	fi
 
-	cd - >/dev/null
-}
+	if ! update_kubernetes_secret_kustomization "$kustomization_file" "$encrypted_name" "$kustomization_temp"; then
+		rm -f "$encrypted_file"
+		return 1
+	fi
+
+	relative_secret="infrastructure-flux/components/secrets/$encrypted_name"
+	relative_kustomization="infrastructure-flux/components/secrets/kustomization.yaml"
+	if ! git -C "$infra_repo" add -- "$relative_secret" "$relative_kustomization" || \
+		! git -C "$infra_repo" commit --only -m "feat: add $secret_name secret" -- "$relative_secret" "$relative_kustomization"; then
+		echo "❌ Git-commit misslyckades. Filerna är kvar lokalt för granskning." >&2
+		return 1
+	fi
+	if ! git -C "$infra_repo" push; then
+		echo "❌ Push misslyckades; commiten finns kvar lokalt." >&2
+		return 1
+	fi
+
+	echo "✅ Krypterad Secret skapad och pushad: $encrypted_file"
+	echo "Flux kommer automatiskt plocka upp ändringen."
+)
