@@ -40,33 +40,32 @@ main_kill() {
 		return 1
 	fi
 
-	local pid
-	pid=$(lsof -ti ":$port" 2>/dev/null)
+	local pids
+	pids=$(lsof -ti ":$port" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')
 
-	if [ -z "$pid" ]; then
+	if [ -z "$pids" ]; then
 		echo "❌ Ingenting kör på port $port"
 		return 1
 	fi
 
-	local process_name
-	process_name=$(ps -p "$pid" -o comm= 2>/dev/null)
-
 	echo -e "\033[34m🔪 Dödar process på port $port...\033[0m"
-	echo "  Process: $process_name (PID: $pid)"
+	echo "  PIDs: $pids"
 
-	kill "$pid" 2>/dev/null
+	echo "$pids" | xargs -r kill 2>/dev/null
 
 	sleep 0.5
 
-	if kill -0 "$pid" 2>/dev/null; then
-		echo "  Processen svarade inte, tvingar..."
-		kill -9 "$pid" 2>/dev/null
-	fi
+	# Force kill any remaining
+	echo "$pids" | xargs -r kill -9 2>/dev/null
+	sleep 0.5
 
-	if kill -0 "$pid" 2>/dev/null; then
-		echo "❌ Kunde inte döda processen"
+	# Verify all are dead
+	local remaining
+	remaining=$(lsof -ti ":$port" 2>/dev/null)
+	if [ -n "$remaining" ]; then
+		echo "❌ Kunde inte döda: $remaining"
 		return 1
 	fi
 
-	echo -e "\033[32m✅ Process $process_name (PID: $pid) avslutad\033[0m"
+	echo -e "\033[32m✅ Process(er) (PIDs: $pids) avslutad\033[0m"
 }

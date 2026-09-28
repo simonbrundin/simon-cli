@@ -210,9 +210,9 @@ main_pr() {
 
 	echo "📦 Current branch: $branch"
 
-	# 3. Kontrollera om det finns uncommitted changes
-	if ! git diff --quiet || ! git diff --cached --quiet; then
-		echo "❌ Du har ocommitade ändringar. Commit först."
+	# Include untracked files; --force must never discard user data.
+	if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+		echo "❌ Du har ocommitade eller otrackade ändringar. Commit eller flytta dem först." >&2
 		return 1
 	fi
 
@@ -226,7 +226,10 @@ main_pr() {
 
 	# 5. Skapa PR
 	echo "📝 Skapar PR..."
-	gh pr create --fill --web
+	if ! gh pr create --fill --web; then
+		echo "❌ PR kunde inte skapas; worktreen lämnas orörd." >&2
+		return 1
+	fi
 
 	# 6. Hitta worktree root och parent repo
 	local root
@@ -245,7 +248,10 @@ main_pr() {
 	# 8. Ta bort worktree om det finns
 	if [ -d "$root" ]; then
 		echo "🧹 Tar bort worktree: $root"
-		git worktree remove "$root" --force
+		if ! git worktree remove "$root"; then
+			echo "❌ Worktree kunde inte tas bort säkert; den lämnas kvar." >&2
+			return 1
+		fi
 	else
 		echo "🧹 Worktree finns redan inte: $root"
 	fi
