@@ -3,7 +3,17 @@
 # Converted from ai.nu
 
 main_ai() {
-    eval "$AI_AGENT"
+    case "${AI_AGENT:-}" in
+        opencode|crush|claude) "$AI_AGENT" ;;
+        "")
+            echo "❌ AI_AGENT är inte konfigurerad. Kör 'simon ai change agent'." >&2
+            return 1
+            ;;
+        *)
+            echo "❌ AI-agenten är inte tillåten: $AI_AGENT" >&2
+            return 1
+            ;;
+    esac
 }
 
 main_ai_tui() {

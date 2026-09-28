@@ -117,6 +117,7 @@ main() {
                 arg="$2"
                 if [ -n "$3" ]; then arg="$arg $3"; fi
                 case "$arg" in
+                    "switch") main_kubernetes_switch ;;
                     "login certificate") main_kubernetes_login_certificate ;;
                     "login teleport") main_kubernetes_login_teleport ;;
                     "dashboard") main_kubernetes_dashboard ;;
@@ -203,8 +204,22 @@ main() {
                     *) echo "Unknown login command: $2" ;;
                 esac
                 ;;
+            push) main_push ;;
+            import)
+                case "$2" in
+                    photos) main_photos ;;
+                    *) echo "Unknown import command: $2" ;;
+                esac
+                ;;
+            kill) shift; main_kill "$@" ;;
             test) main_test ;;
             commit) main_commit ;;
+            tilt)
+                case "$2" in
+                    restart) main_tilt_restart ;;
+                    *) echo "Usage: simon tilt restart" ;;
+                esac
+                ;;
             clone) shift; main_clone "$@" ;;
             ci) shift; main_ci "$@" ;;
             ai)
@@ -330,10 +345,14 @@ main_vpn_up() {
 }
 
 main_new_repo() {
-    name="$1"
-    if [ -z "$name" ]; then
-        echo "Usage: simon new repo <name>"
-        return
+    local name="${1:-}"
+    local repos_dir="$HOME/repos"
+    local repo_path
+
+    if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ ]]; then
+        echo "Usage: simon new repo <name>" >&2
+        echo "Repo names may contain only letters, numbers, dots, underscores, and hyphens." >&2
+        return 1
     fi
 
     unset GITHUB_TOKEN
@@ -357,22 +376,36 @@ main_new_repo() {
         fi
     fi
 
-    repo_path="$HOME/repos/$name"
+    repo_path="$repos_dir/$name"
+    if [ -e "$repo_path" ] || [ -L "$repo_path" ]; then
+        echo "❌ Repo-katalogen finns redan: $repo_path" >&2
+        return 1
+    fi
+    mkdir -p "$repos_dir" || return 1
+    if ! mkdir "$repo_path"; then
+        echo "❌ Kunde inte skapa repo-katalogen: $repo_path" >&2
+        return 1
+    fi
 
-    mkdir -p "$repo_path"
-    cd "$repo_path"
+    if ! cd "$repo_path" || ! git init || ! git checkout -b main; then
+        echo "❌ Kunde inte initiera repo: $repo_path" >&2
+        cd "$HOME" || return 1
+        rm -rf -- "$repo_path"
+        return 1
+    fi
 
-    git init
-    git checkout -b main
-
-    echo "# $name" > README.md
-
-    git add .
-    git commit -m "Initial commit"
+    if ! printf '# %s\n' "$name" > README.md || ! git add README.md || \
+        ! git commit -m "Initial commit"; then
+        echo "❌ Kunde inte skapa initial commit" >&2
+        cd "$HOME" || return 1
+        rm -rf -- "$repo_path"
+        return 1
+    fi
 
     if ! gh repo create "$name" --public --remote=origin --source="$repo_path" --push 2>&1; then
         echo "❌ Misslyckades att skapa GitHub-repo"
-        rm -rf "$repo_path"
+        cd "$HOME" || return 1
+        rm -rf -- "$repo_path"
         return 1
     fi
 
@@ -516,6 +549,7 @@ show_help() {
     echo "  kanata test       Test Kanata"
     echo ""
     echo "Kubernetes commands:"
+    echo "  kubernetes switch"
     echo "  kubernetes login certificate"
     echo "  kubernetes login teleport"
     echo "  kubernetes dashboard"
@@ -594,6 +628,9 @@ echo "AI commands:"
     echo "Update commands:"
     echo "  update agentos [--no-projects]  Update Agent OS and optionally projects"
     echo ""
+    echo "Tilt commands:"
+    echo "  tilt restart       Restart Tilt & clear logs"
+    echo ""
     echo "Network commands:"
     echo "  trip <target>      Trace route to target"
     echo "  kill <port>        Kill process running on port"
@@ -660,6 +697,7 @@ else
                 if [ -n "$3" ]; then arg="$arg $3"; fi
                 if [ -n "$4" ]; then arg="$arg $4"; fi
                 case "$arg" in
+                    "switch") main_kubernetes_switch ;;
                     "login certificate") main_kubernetes_login_certificate ;;
                     "login teleport") main_kubernetes_login_teleport ;;
                     "dashboard") main_kubernetes_dashboard ;;
@@ -755,6 +793,12 @@ else
                 ;;
             test) main_test ;;
             commit) main_commit ;;
+            tilt)
+                case "$2" in
+                    restart) main_tilt_restart ;;
+                    *) echo "Usage: simon tilt restart" ;;
+                esac
+                ;;
             clone) shift; main_clone "$@" ;;
             ci) shift; main_ci "$@" ;;
             ai)
