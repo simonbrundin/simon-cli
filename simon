@@ -20,6 +20,7 @@ source "$SCRIPT_DIR/scripts/unifi.sh"
 source "$SCRIPT_DIR/scripts/photos.sh"
 source "$SCRIPT_DIR/scripts/network.sh"
 source "$SCRIPT_DIR/scripts/stow.sh"
+source "$SCRIPT_DIR/scripts/test.sh"
 
 # Source functions
 source "$SCRIPT_DIR/functions.sh"
@@ -212,7 +213,13 @@ main() {
                 esac
                 ;;
             kill) shift; main_kill "$@" ;;
-            test) main_test ;;
+            test)
+                case "$2" in
+                    discover) main_test_discover "${3:-.}" ;;
+                    "") main_test "${3:-.}" ;;
+                    *) main_test "$2" ;;
+                esac
+                ;;
             commit) main_commit ;;
             tilt)
                 case "$2" in
@@ -603,7 +610,8 @@ show_help() {
     echo "  dev"
     echo "  devpod delete"
     echo "  login vault"
-    echo "  test"
+    echo "  test [path]        Run tests in project(s)"
+    echo "  test discover       Discover testable projects"
     echo "  commit"
     echo ""
     echo "Git commands:"
@@ -791,7 +799,13 @@ else
                     *) echo "Unknown import command: $2" ;;
                 esac
                 ;;
-            test) main_test ;;
+            test)
+                case "$2" in
+                    discover) main_test_discover "${3:-.}" ;;
+                    "") main_test "${3:-.}" ;;
+                    *) main_test "$2" ;;
+                esac
+                ;;
             commit) main_commit ;;
             tilt)
                 case "$2" in
