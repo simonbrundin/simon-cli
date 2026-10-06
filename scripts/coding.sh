@@ -23,25 +23,49 @@ main_dev() {
 		return 1
 	fi
 
-	local dev_dir="$root_dir/environments/dev"
+	# Generate Kind cluster name: repo-name.branch
+	local project_name=$(basename "$root_dir")
+	local branch=$(git -C "$root_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
+	# Replace / with - to handle branch names like feature/test
+	branch=$(echo "$branch" | tr '/' '-')
+	local cluster_name="$project_name.$branch"
 
-	if [ ! -d "$dev_dir" ]; then
-		echo "❌ Directory not found: $dev_dir"
+	# Create Kind cluster with local registry using ctlptl
+	if ! kind get clusters 2>/dev/null | grep -q "^$cluster_name$"; then
+		echo "🔧 Skapar Kind-kluster med registry: $cluster_name"
+		ctlptl create cluster "$cluster_name" --registry=ctlptl-registry 2>/dev/null || \
+			kind create cluster --name "$cluster_name" --wait 5m
+	else
+		echo "✅ Kind-kluster finns redan: $cluster_name"
+	fi
+
+	# Switch kubeconfig to Kind cluster
+	echo "🔗 Byter till Kind-kontext: $cluster_name"
+	kind export kubeconfig --name "$cluster_name"
+
+	# Configure Tilt to use local registry
+	echo "📦 Konfigurerar lokal registry..."
+
+	# Find Tiltfile location
+	local tilt_dir="$root_dir/environments/dev"
+	if [ ! -d "$tilt_dir" ]; then
+		tilt_dir="$root_dir/dev"
+	fi
+	if [ ! -d "$tilt_dir" ]; then
+		tilt_dir="$root_dir"
+	fi
+
+	if [ ! -f "$tilt_dir/Tiltfile" ]; then
+		echo "❌ Ingen Tiltfile hittad i: $tilt_dir"
 		return 1
 	fi
 
-	# Generate unique port based on worktree/project name
-	local project_name=$(basename "$root_dir")
+	# Generate unique tilt port based on project name
 	local port_offset=$(echo "$project_name" | cksum | awk '{print $1 % 100}')
 	local tilt_port=$((10350 + port_offset))
 
-	# Always use kind-foodflow context for foodflow project
-	if [ "$project_name" = "foodflow" ]; then
-		kubectl config use-context kind-foodflow 2>/dev/null
-	fi
-
-	echo "📁 Changing to: $dev_dir"
-	cd "$dev_dir" || return 1
+	echo "📁 Changing to: $tilt_dir"
+	cd "$tilt_dir" || return 1
 	echo "🚀 Starting Tilt on port $tilt_port"
 	TILT_PORT="$tilt_port" tilt up
 }
@@ -185,10 +209,19 @@ main_tilt_restart() {
 	local port_offset=$(echo "$project_name" | cksum | awk '{print $1 % 100}')
 	local tilt_port=$((10350 + port_offset))
 
-	# Always use kind-foodflow context for foodflow project
-	if [ "$project_name" = "foodflow" ]; then
-		kubectl config use-context kind-foodflow 2>/dev/null
+	# Generate Kind cluster name and ensure it exists
+	local branch=$(git -C "$root_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
+	# Replace / with - to handle branch names like feature/test
+	branch=$(echo "$branch" | tr '/' '-')
+	local cluster_name="$project_name.$branch"
+
+	if ! kind get clusters 2>/dev/null | grep -q "^$cluster_name$"; then
+		echo "🔧 Skapar Kind-kluster: $cluster_name"
+		kind create cluster --name "$cluster_name" --wait 5m
 	fi
+
+	# Switch kubeconfig to Kind cluster
+	kind export kubeconfig --name "$cluster_name"
 
 	# Find tilt processes running in this project's dev_dir
 	local tilt_pid=""

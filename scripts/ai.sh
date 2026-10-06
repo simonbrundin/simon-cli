@@ -17,7 +17,12 @@ main_ai() {
 }
 
 main_ai_tui() {
-    (cd /home/simon/repos/ai && go build -o /home/simon/repos/ai/ai-tui . && /home/simon/repos/ai/ai-tui)
+    # Check if a feature name was provided
+    if [ -n "$2" ]; then
+        /home/simon/repos/agents/bin/agent --workflow "$2"
+    else
+        /home/simon/repos/agents/bin/agent --tui
+    fi
 }
 
 main_ai_change_agent() {

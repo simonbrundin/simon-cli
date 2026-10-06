@@ -3,11 +3,10 @@
 # Converted from install.nu
 
 main_install() {
-    local package="$1"
     local dotfiles_path="$HOME/repos/dotfiles"
 
     if command -v brew >/dev/null 2>&1; then
-        brew install "$package" 2>&1 || echo "Package may already be installed"
+        brew install "$@" 2>&1 || echo "Package may already be installed"
         brew upgrade 2>&1 || echo "No upgrades available"
         if [ -d "$dotfiles_path" ]; then
             brew bundle dump --file "$dotfiles_path/brew/.Brewfile" --force 2>/dev/null
