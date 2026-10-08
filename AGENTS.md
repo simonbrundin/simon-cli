@@ -273,3 +273,95 @@ esac
 | `scripts/*.sh` | Command implementations               |
 | `agent-os/`    | Agent OS standards and workflows      |
 | `CRUSH.md`     | Legacy documentation (outdated)       |
+
+---
+
+## Tilt Dev Workflow
+
+The `simon dev` command uses a centralized Tiltfile from the template repo while building from the local project.
+
+### Architecture
+
+```
+/home/simon/repos/repo-template/environments/dev/
+├── Tiltfile          # Shared Tiltfile (template)
+└── tilt.yaml         # Default resources config
+
+/home/simon/repos/<project>/environments/dev/
+└── tilt.yaml        # Project-specific config (copied from template if missing)
+```
+
+Tilt uses `tilt up -f /path/to/template/Tiltfile` and environment variables to read resources from the local project.
+
+### Environment Variables
+
+`simon dev` sets these environment variables for Tilt:
+
+| Variable           | Description                                      |
+| ------------------ | ------------------------------------------------ |
+| `TILT_LOCAL_ROOT`  | Local project root (where `tilt.yaml` lives)    |
+| `TILT_YAML_PATH`   | Path to project's `tilt.yaml`                    |
+| `TILT_REPO_NAME`   | Project/repo name (for Kind cluster naming)      |
+| `TILT_BRANCH`      | Git branch name                                  |
+| `TILT_PORT_OFFSET` | Unique port offset (`repo + branch` hash)        |
+| `TILT_PORT`        | Tilt UI port                                    |
+
+### Port Allocation
+
+Each project+branch combination gets a unique port:
+- Base port: `10350`
+- Offset: `cksum(repo_name + branch) % 100`
+- Example: `plan.main` → port 10447, `plan.feature-x` → different port
+
+This allows running multiple `simon dev` instances simultaneously.
+
+### tilt.yaml Format
+
+Projects using Tilt should have a `tilt.yaml` in their dev directory:
+
+```yaml
+resources:
+  nuxt:
+    type: dockerfile
+    image-name: nuxt-app                    # Must match deployment image
+    dockerfile: ../../src/nuxt             # Relative to tilt.yaml location
+    port: 3000                             # Container port
+```
+
+### Adding New Projects
+
+1. Ensure project has `environments/dev/tilt.yaml` (copied from template if missing)
+2. Ensure `environments/dev/` has a `deployment.yaml` with:
+   - `spec.selector.matchLabels.app`
+   - `spec.template.metadata.labels.app`
+   - Both should match the `image-name` in `tilt.yaml`
+
+### Shared Infrastructure (base/)
+
+The `repo-template/environments/base/` contains shared infrastructure deployed to every dev cluster:
+
+```
+base/
+├── shared/
+│   ├── cnpg-namespace.yaml    # cnpg-system namespace
+│   ├── cnpg.yaml               # CloudNativePG operator
+│   └── gateway-api.yaml         # Gateway API CRDs
+├── deployment.yaml              # Project-specific app
+├── service.yaml
+├── namespace.yaml
+└── kustomization.yaml
+```
+
+Projects using `resources: [../base]` automatically get:
+- **CloudNativePG** - PostgreSQL operator (namespace: cnpg-system)
+- **Gateway API** - Ingress API (CRDs only)
+
+To update shared infrastructure:
+1. Regenerate YAML: `helm template ... > shared/cnpg.yaml`
+2. Commit and push to repo-template
+
+### Common Issues
+
+- **Port conflicts**: Kill old Tilt processes with `pkill -9 -f tilt`
+- **Pod not found**: Check namespace in deployment matches cluster context
+- **Image build fails**: Verify Dockerfile path in `tilt.yaml` is correct
