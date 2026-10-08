@@ -3,71 +3,8 @@
 # Converted from coding.nu
 
 main_dev() {
-	# Find project root (where .git lives)
-	local current_dir="$PWD"
-	local root_dir=""
-
-	while [ "$current_dir" != "/" ]; do
-		if [ "$current_dir" = "$HOME" ]; then
-			break
-		fi
-		if [ -d "$current_dir/.git" ] || [ -f "$current_dir/.git" ]; then
-			root_dir="$current_dir"
-			break
-		fi
-		current_dir="$(dirname "$current_dir")"
-	done
-
-	if [ -z "$root_dir" ]; then
-		echo "❌ Not in a git project (no .git directory/file found)"
-		return 1
-	fi
-
-	# Generate Kind cluster name: repo-name.branch
-	local project_name=$(basename "$root_dir")
-	local branch=$(git -C "$root_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
-	# Replace / with - to handle branch names like feature/test
-	branch=$(echo "$branch" | tr '/' '-')
-	local cluster_name="$project_name.$branch"
-
-	# Create Kind cluster with local registry using ctlptl
-	if ! kind get clusters 2>/dev/null | grep -q "^$cluster_name$"; then
-		echo "🔧 Skapar Kind-kluster med registry: $cluster_name"
-		ctlptl create cluster "$cluster_name" --registry=ctlptl-registry 2>/dev/null || \
-			kind create cluster --name "$cluster_name" --wait 5m
-	else
-		echo "✅ Kind-kluster finns redan: $cluster_name"
-	fi
-
-	# Switch kubeconfig to Kind cluster
-	echo "🔗 Byter till Kind-kontext: $cluster_name"
-	kind export kubeconfig --name "$cluster_name"
-
-	# Configure Tilt to use local registry
-	echo "📦 Konfigurerar lokal registry..."
-
-	# Find Tiltfile location
-	local tilt_dir="$root_dir/environments/dev"
-	if [ ! -d "$tilt_dir" ]; then
-		tilt_dir="$root_dir/dev"
-	fi
-	if [ ! -d "$tilt_dir" ]; then
-		tilt_dir="$root_dir"
-	fi
-
-	if [ ! -f "$tilt_dir/Tiltfile" ]; then
-		echo "❌ Ingen Tiltfile hittad i: $tilt_dir"
-		return 1
-	fi
-
-	# Generate unique tilt port based on project name
-	local port_offset=$(echo "$project_name" | cksum | awk '{print $1 % 100}')
-	local tilt_port=$((10350 + port_offset))
-
-	echo "📁 Changing to: $tilt_dir"
-	cd "$tilt_dir" || return 1
-	echo "🚀 Starting Tilt on port $tilt_port"
-	TILT_PORT="$tilt_port" tilt up
+	# Delegate to devenv/dev.sh
+	exec /home/simon/repos/devenv/dev.sh
 }
 
 main_devpod_delete() {
@@ -204,13 +141,33 @@ main_tilt_restart() {
 		return 1
 	fi
 
-	# Generate unique port based on worktree/project name
+	# Find Tiltfile location (from template repo)
+	local template_tiltfile="/home/simon/repos/repo-template/environments/dev/Tiltfile"
+	if [ ! -f "$template_tiltfile" ]; then
+		template_tiltfile="/home/simon/repos/repo-template/dev/Tiltfile"
+	fi
+	if [ ! -f "$template_tiltfile" ]; then
+		echo "❌ Ingen Tiltfile hittad i mall-repo: /home/simon/repos/repo-template"
+		return 1
+	fi
+
+	# Copy tilt.yaml from template if not exists locally
+	local template_tiltyaml="/home/simon/repos/repo-template/environments/dev/tilt.yaml"
+	if [ ! -f "$template_tiltyaml" ]; then
+		template_tiltyaml="/home/simon/repos/repo-template/dev/tilt.yaml"
+	fi
+	if [ -f "$template_tiltyaml" ] && [ ! -f "$dev_dir/tilt.yaml" ]; then
+		echo "📋 Kopierar tilt.yaml från mallen..."
+		cp "$template_tiltyaml" "$dev_dir/tilt.yaml"
+	fi
+
+	# Generate unique port based on project name + branch
 	local project_name=$(basename "$root_dir")
-	local port_offset=$(echo "$project_name" | cksum | awk '{print $1 % 100}')
+	local branch=$(git -C "$root_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+	local port_offset=$(echo "$project_name$branch" | cksum | awk '{print $1 % 100}')
 	local tilt_port=$((10350 + port_offset))
 
 	# Generate Kind cluster name and ensure it exists
-	local branch=$(git -C "$root_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
 	# Replace / with - to handle branch names like feature/test
 	branch=$(echo "$branch" | tr '/' '-')
 	local cluster_name="$project_name.$branch"
@@ -266,7 +223,7 @@ main_tilt_restart() {
 		# No tmux found, start in background
 		echo "🚀 Ingen tmux hittades, startar Tilt i bakgrunden..."
 		cd "$dev_dir" || return 1
-		nohup bash -c "TILT_PORT=$tilt_port tilt up" > /dev/null 2>&1 &
+		nohup bash -c "TILT_PORT=$tilt_port TILT_LOCAL_ROOT=$dev_dir TILT_REPO_NAME=$project_name TILT_BRANCH=$branch TILT_PORT_OFFSET=$port_offset tilt up -f '$template_tiltfile'" > /dev/null 2>&1 &
 	fi
 
 	echo "✅ Tilt omstartad på port $tilt_port"
