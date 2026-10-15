@@ -110,6 +110,7 @@ main_talos_upgrade() {
     local target_node="${1:-}"
     local target_version="${2:-}"
     local target_login="${3:-}"
+    local skip_cordon_drain="${4:-false}"
 
     if [ -n "$target_node" ]; then
         echo "Uppgraderar specifik nod: $target_node"
@@ -150,19 +151,250 @@ main_talos_upgrade() {
             return 1
         fi
     fi
-    selectedNodesString=$(printf '%s\n' "$selectedNodes" | paste -sd, -)
-    schematicID=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"talos-schematic-id\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
-    arch=$(yq ".nodes[] | select(.name == \"$selectedNodesString\") | .\"arch\"" /home/simon/repos/infrastructure/talos/nodes.yaml | head -1 | tr -d '"')
 
-    if [ -z "$schematicID" ]; then
-        echo "❌ Fel: Kunde inte hämta talos-schematic-id för nod $selectedNodesString"
-        echo "   Kontrollera att noden finns i nodes.yaml"
-        return 1
+    # Check for worker nodes
+    local worker_nodes=()
+    local controlplane_nodes=()
+    for node in $selectedNodes; do
+        local role
+        role=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.node\.role\.kubernetes\.io/role}' 2>/dev/null || echo "worker")
+        if [ "$role" = "control-plane" ]; then
+            controlplane_nodes+=("$node")
+        else
+            worker_nodes+=("$node")
+        fi
+    done
+
+    # Pre-flight checks for worker nodes
+    if [ ${#worker_nodes[@]} -gt 0 ]; then
+        echo -e "\n\033[33m⚠️  Pre-flight kontroller för worker-noder...\033[0m"
+
+        # Check PDBs
+        echo "📋 Kontrollerar Pod Disruption Budgets..."
+        local pdb_output
+        pdb_output=$(kubectl get pdb --all-namespaces 2>&1)
+        if echo "$pdb_output" | grep -q "No resources found"; then
+            echo "  ⚠️  Inga PDBs konfigurerade!"
+            echo "     Överväg att skapa PDBs för att skydda dina applikationer."
+            if [ "$skip_cordon_drain" != "true" ]; then
+                echo -n "   Fortsätt ändå? (y/N): "
+                read -r confirm
+                if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+                    echo "Avbruten."
+                    return 1
+                fi
+            fi
+        else
+            echo "$pdb_output"
+        fi
+
+        # Check cluster capacity
+        echo "📋 Kontrollerar klusterkapacitet..."
+        local ready_nodes
+        ready_nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+        echo "  Antal redo noder: $ready_nodes"
+        echo "  Worker-noder som ska uppgraderas: ${#worker_nodes[@]}"
+
+        if [ "$ready_nodes" -le ${#worker_nodes[@]} ]; then
+            echo "❌ Fel: För få noder! Du måste ha minst 1 node kvar för att schemalägga pods."
+            return 1
+        fi
+
+        # Check for pods with local PVs on worker nodes
+        for node in "${worker_nodes[@]}"; do
+            local pods_with_pv
+            pods_with_pv=$(kubectl get pods --all-namespaces \
+                --field-selector spec.nodeName="$node" \
+                -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' 2>/dev/null | \
+                while IFS= read -r pod; do
+                    kubectl get pod "$pod" -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}' 2>/dev/null
+                done | grep -v "^$" | wc -l)
+            if [ "$pods_with_pv" -gt 0 ]; then
+                echo "  ⚠️  Nod $node har $pods_with_pv pod(s) med persistent volumes"
+                echo "     Dessa pods kan inte flyttas och kommer att vara nere tills noden är tillbaka."
+            fi
+        done
     fi
 
-    echo "🔧 Uppgraderar nod $selectedNodesString med schematic: $schematicID"
-    echo "🔗 https://factory.talos.dev/image/$schematicID/$selectedVersion/metal-$arch.raw.xz"
-    talosctl upgrade --image "factory.talos.dev/installer/$schematicID:$selectedVersion" -n "$selectedNodesString"
+    # Upgrade each node with safe workflow
+    local all_nodes=("${worker_nodes[@]}" "${controlplane_nodes[@]}")
+    local upgrade_order=()
+
+    # For workers, upgrade sequentially to maintain capacity
+    # For controlplanes, also upgrade sequentially (no etcd cluster upgrades here)
+    if [ ${#worker_nodes[@]} -gt 0 ]; then
+        echo -e "\n\033[33m🔄 Worker-noder uppgraderas sekventiellt för att behålla klusterkapacitet...\033[0m"
+        for node in "${worker_nodes[@]}"; do
+            upgrade_order+=("$node")
+        done
+    fi
+
+    if [ ${#controlplane_nodes[@]} -gt 0 ]; then
+        echo -e "\n\033[33m🔄 Controlplane-noder:\033[0m"
+        for node in "${controlplane_nodes[@]}"; do
+            upgrade_order+=("$node")
+        done
+    fi
+
+    # Perform upgrade with cordon/drain workflow
+    for node in "${upgrade_order[@]}"; do
+        local role
+        role=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.node\.role\.kubernetes\.io/role}' 2>/dev/null || echo "worker")
+        local is_worker=false
+        if [ "$role" != "control-plane" ]; then
+            is_worker=true
+        fi
+
+        echo -e "\n\033[32m════════════════════════════════════════════════════════════\033[0m"
+        echo "\033[32m🔄 Oppgraderar nod: $node ($role)\033[0m"
+        echo "\033[32m════════════════════════════════════════════════════════════\033[0m"
+
+        # Get node IP
+        local node_ip
+        node_ip=$(yq ".nodes[] | select(.name == \"$node\") | .ip" /home/simon/repos/infrastructure/talos/nodes.yaml 2>/dev/null | tr -d '"')
+        if [ -z "$node_ip" ]; then
+            echo "❌ Kunde inte hitta IP för nod $node"
+            continue
+        fi
+
+        # Get schematic and arch
+        local schematicID arch
+        schematicID=$(yq ".nodes[] | select(.name == \"$node\") | .\"talos-schematic-id\"" /home/simon/repos/infrastructure/talos/nodes.yaml 2>/dev/null | head -1 | tr -d '"')
+        arch=$(yq ".nodes[] | select(.name == \"$node\") | .\"arch\"" /home/simon/repos/infrastructure/talos/nodes.yaml 2>/dev/null | head -1 | tr -d '"')
+
+        if [ -z "$schematicID" ]; then
+            echo "❌ Fel: Kunde inte hämta talos-schematic-id för nod $node"
+            continue
+        fi
+
+        echo "📝 Nod: $node | IP: $node_ip | Arch: $arch"
+        echo "🔗 https://factory.talos.dev/image/$schematicID/$selectedVersion/metal-$arch.raw.xz"
+
+        # Step 1: Cordon (for worker nodes to protect workloads)
+        if [ "$is_worker" = true ] && [ "$skip_cordon_drain" != "true" ]; then
+            echo -e "\n\033[34m📌 Steg 1: Cordon noden\033[0m"
+            kubectl cordon "$node"
+            echo "✅ Noden är nu cordoned (ingen ny scheduling)"
+        fi
+
+        # Step 2: Drain (for worker nodes)
+        if [ "$is_worker" = true ] && [ "$skip_cordon_drain" != "true" ]; then
+            echo -e "\n\033[34m📌 Steg 2: Drain noden\033[0m"
+            echo "   Kör: kubectl drain $node --ignore-daemonsets --delete-emptydir-data --grace-period=60 --timeout=300s"
+
+            if kubectl drain "$node" \
+                --ignore-daemonsets \
+                --delete-emptydir-data \
+                --grace-period=60 \
+                --timeout=300s 2>&1; then
+                echo "✅ Noden är dränerad"
+            else
+                echo "❌ Drain misslyckades eller timeout"
+                echo "   Försöker vänta lite och fortsätta..."
+                sleep 5
+            fi
+
+            # Show pods being evicted
+            echo "   Pods som evakuerats:"
+            kubectl get pods --all-namespaces --field-selector spec.nodeName="$node" -o wide 2>/dev/null || true
+        fi
+
+        # Step 3: Upgrade Talos
+        echo -e "\n\033[34m📌 Steg 3: Oppgraderar Talos\033[0m"
+        echo "   Bild: factory.talos.dev/installer/$schematicID:$selectedVersion"
+
+        if talosctl upgrade \
+            --image "factory.talos.dev/installer/$schematicID:$selectedVersion" \
+            --nodes "$node_ip" \
+            --wait \
+            --timeout 15m 2>&1; then
+            echo "✅ Talos-uppgradering slutförd"
+        else
+            echo "❌ Talos-uppgradering misslyckades"
+            echo "   Försöker uncordon om det är en worker..."
+            if [ "$is_worker" = true ]; then
+                kubectl uncordon "$node" 2>/dev/null || true
+            fi
+            continue
+        fi
+
+        # Step 4: Wait for node to come back and check health
+        echo -e "\n\033[34m📌 Steg 4: Väntar på att noden ska bli redo\033[0m"
+        echo "   Timeout: 10 minuter"
+
+        if talosctl health \
+            --nodes "$node_ip" \
+            --wait-timeout 10m 2>&1; then
+            echo "✅ Noden är vid god hälsa"
+        else
+            echo "⚠️  Health check timeout eller misslyckades"
+            echo "   Kontrollerar status manuellt..."
+        fi
+
+        # Verify version
+        echo "\n   Verifierar version..."
+        talosctl version --nodes "$node_ip" --short 2>&1 | head -5
+
+        # Check system services
+        echo "\n   System services:"
+        talosctl services --nodes "$node_ip" 2>&1 | grep -E "STATE|running" || true
+
+        # Step 5: Verify Kubernetes node status
+        echo -e "\n\033[34m📌 Steg 5: Verifierar Kubernetes-status\033[0m"
+        local max_wait=120
+        local waited=0
+        while [ $waited -lt $max_wait ]; do
+            local node_status
+            node_status=$(kubectl get node "$node" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+            if [ "$node_status" = "True" ]; then
+                echo "✅ Noden är Ready i Kubernetes"
+                break
+            fi
+            echo "   Väntar på att noden ska bli Ready... ($waited/$max_wait s)"
+            sleep 10
+            waited=$((waited + 10))
+        done
+
+        if [ $waited -ge $max_wait ]; then
+            echo "⚠️  Noden blev inte Ready inom $max_wait sekunder"
+        fi
+
+        kubectl get node "$node" --no-headers 2>/dev/null || true
+
+        # Step 6: Uncordon (for worker nodes)
+        if [ "$is_worker" = true ] && [ "$skip_cordon_drain" != "true" ]; then
+            echo -e "\n\033[34m📌 Steg 6: Uncordon noden\033[0m"
+            kubectl uncordon "$node"
+            echo "✅ Noden är nu schedulable igen"
+        fi
+
+        # Step 7: Wait for stabilization before next node
+        echo -e "\n\033[33m⏳ Väntar 2 minuter för kluster-stabilisering innan nästa nod...\033[0m"
+        echo "   (Visar nya pods på $node:)"
+        kubectl get pods --all-namespaces \
+            --field-selector spec.nodeName="$node" \
+            --watch 2>&1 &
+        local watch_pid=$!
+        sleep 120
+        kill $watch_pid 2>/dev/null || true
+
+        echo -e "\n\033[32m✅ Nod $node färdig!\033[0m"
+    done
+
+    echo -e "\n\033[32m════════════════════════════════════════════════════════════\033[0m"
+    echo "\033[32m✅ ALLA NODER UPPGRADERADE!\033[0m"
+    echo "\033[32m════════════════════════════════════════════════════════════\033[0m"
+
+    # Post-upgrade verification
+    echo -e "\n\033[34m📋 Post-uppgraderings-verifiering:\033[0m"
+    echo "Alla noder:"
+    kubectl get nodes
+
+    echo "\nPods med problem:"
+    kubectl get pods --all-namespaces 2>/dev/null | awk 'NR==1 || ($4!="Running" && $4!="Completed")' || true
+
+    echo "\nPvcs med problem:"
+    kubectl get pvc --all-namespaces 2>/dev/null | awk 'NR==1 || $2!="Bound"' || true
 }
 
 main_talos_update_config() (
