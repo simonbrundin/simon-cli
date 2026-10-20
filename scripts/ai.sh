@@ -3,17 +3,16 @@
 # Converted from ai.nu
 
 main_ai() {
-    case "${AI_AGENT:-}" in
-        opencode|crush|claude) "$AI_AGENT" ;;
-        "")
-            echo "❌ AI_AGENT är inte konfigurerad. Kör 'simon ai change agent'." >&2
-            return 1
-            ;;
-        *)
-            echo "❌ AI-agenten är inte tillåten: $AI_AGENT" >&2
-            return 1
-            ;;
-    esac
+    # Set SOPS age key from 1Password if not already set
+    if [ -z "$SOPS_AGE_KEY" ]; then
+        export SOPS_AGE_KEY=$(op item get "SOPS" --reveal --fields label="SOPS Private Key" 2>/dev/null)
+    fi
+    
+    if [ -n "$1" ]; then
+        /home/simon/repos/agents/bin/agent "$@"
+    else
+        /home/simon/repos/agents/bin/agent --tui
+    fi
 }
 
 main_ai_tui() {
