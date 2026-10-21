@@ -426,6 +426,7 @@ k8s_health_check_talos_certs() {
             # No certificate presented: apid is not serving TLS (or is wedged)
             echo -e "${K8S_HEALTH_RED}  ✗ $name ($ip) - ingen TLS-handshake mot Talos-API${K8S_HEALTH_RESET}"
             k8s_health_error "Talos-API svarar inte med TLS på $name ($ip)"
+            k8s_health_restart_hint "$name" " (apid svarar inte alls - starta om noden)"
             broken=$((broken + 1))
             continue
         fi
