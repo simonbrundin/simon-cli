@@ -573,7 +573,7 @@ show_help() {
     echo "  kubernetes install argocd"
     echo ""
     echo "Cluster commands:"
-    echo "  cluster health"
+    echo "  cluster health [--strict] [--context <ctx>] [--fix] [--quick]"
     echo ""
     echo "Talos commands:"
     echo "  talos dashboard"
