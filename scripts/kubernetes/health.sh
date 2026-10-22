@@ -147,6 +147,34 @@ PY
     timeout "$timeout" bash -c "exec 3<>/dev/tcp/$host/$port" >/dev/null 2>&1
 }
 
+# Perform a TLS handshake against host:port and check that the server presents
+# a certificate. This is the reliable reachability signal for the Talos API.
+#
+# A plain TCP connect is NOT usable in this network: the SD-WAN tunnel accepts
+# the SYN for every address in 10.10.10.0/24 - including addresses where no
+# node exists - so "port open" says nothing about whether a node is there.
+# A TLS handshake only succeeds if something actually speaks the Talos API.
+#
+# Exit codes:
+#   0 - handshake OK, server presented a certificate
+#   1 - no TLS handshake (nothing there, or not a Talos API)
+#   2 - openssl unavailable
+# Args: host port [timeout]
+k8s_health_tls_handshake() {
+    local host="$1" port="$2" timeout="${3:-5}"
+    local out
+
+    command -v openssl >/dev/null 2>&1 || return 2
+
+    out=$(timeout "$timeout" openssl s_client -connect "$host:$port" -servername "$host" \
+        </dev/null 2>/dev/null)
+
+    # A working TLS handshake prints the negotiated cipher and the peer cert
+    echo "$out" | grep -qE 'Cipher is|Cipher    :' || return 1
+    echo "$out" | grep -qE 'subject=|i:.*O = ' || return 1
+    return 0
+}
+
 # Days until a timestamp (RFC3339 or openssl style) - echoes an integer
 # Args: date_string
 k8s_health_days_until() {
@@ -288,12 +316,15 @@ k8s_health_node_list() {
 }
 
 # Check that every node in nodes.yaml is reachable and report per node.
-# Uses ICMP *and* a TCP probe on the Talos API port, because ICMP is
-# frequently blocked on the cluster VLAN.
+#
+# Reachability is decided by a TLS handshake against the Talos API, NOT by a
+# TCP connect: in this network the tunnel accepts every SYN on the cluster
+# subnet, so a TCP connect succeeds even for addresses with no node behind
+# them. ICMP is only used as extra information.
 k8s_health_check_node_inventory() {
     k8s_health_section "Nodstatus (nodes.yaml)..."
 
-    local name ip role ping_ok tcp_ok
+    local name ip role ping_ok tcp_ok tls_ok
     local cp_total=0 cp_up=0 worker_total=0 worker_up=0
     local missing_nodes="" role_mismatch=""
 
@@ -303,19 +334,25 @@ k8s_health_check_node_inventory() {
 
         ping_ok=0
         tcp_ok=0
+        tls_ok=0
         ping -c 1 -W 2 "$ip" >/dev/null 2>&1 && ping_ok=1
         k8s_health_tcp_open "$ip" 50000 2 && tcp_ok=1
+        k8s_health_tls_handshake "$ip" 50000 5 && tls_ok=1
 
-        if [ "$tcp_ok" -eq 1 ]; then
+        if [ "$tls_ok" -eq 1 ]; then
             if [ "$ping_ok" -eq 1 ]; then
                 echo -e "${K8S_HEALTH_GREEN}  ✓ $name ($ip, $role) - reachable${K8S_HEALTH_RESET}"
             else
-                echo -e "${K8S_HEALTH_YELLOW}  ⚠ $name ($ip, $role) - port 50000 öppen, ICMP blockerat${K8S_HEALTH_RESET}"
+                echo -e "${K8S_HEALTH_YELLOW}  ⚠ $name ($ip, $role) - Talos-API svarar, ICMP blockerat${K8S_HEALTH_RESET}"
             fi
         elif [ "$ping_ok" -eq 1 ]; then
-            echo -e "${K8S_HEALTH_RED}  ✗ $name ($ip, $role) - svarar på ping men Talos-API (50000) är stängt${K8S_HEALTH_RESET}"
+            echo -e "${K8S_HEALTH_RED}  ✗ $name ($ip, $role) - svarar på ping men Talos-API (50000) svarar inte${K8S_HEALTH_RESET}"
             k8s_health_error "Talos-API är inte nåbart på $name ($ip)"
             k8s_health_restart_hint "$name" " och applicera config igen: se ~/repos/infrastructure/talos"
+        elif [ "$tcp_ok" -eq 1 ]; then
+            echo -e "${K8S_HEALTH_RED}  ✗ $name ($ip, $role) - TCP-porten är öppen men ingen TLS-handshake (noden kör inte Talos)${K8S_HEALTH_RESET}"
+            k8s_health_error "Ingen TLS-handshake mot Talos-API på $name ($ip) - noden kör inte Talos"
+            k8s_health_restart_hint "$name" " (står förmodligen i U-Boot - starta noden i maintenance mode)"
         else
             echo -e "${K8S_HEALTH_RED}  ✗ $name ($ip, $role) - ingen kontakt${K8S_HEALTH_RESET}"
             k8s_health_error "Noden $name ($ip) svarar inte"
@@ -343,10 +380,10 @@ k8s_health_check_node_inventory() {
 
         if [ "$role" = "controlplane" ]; then
             cp_total=$((cp_total + 1))
-            [ "$tcp_ok" -eq 1 ] && cp_up=$((cp_up + 1))
+            [ "$tls_ok" -eq 1 ] && cp_up=$((cp_up + 1))
         else
             worker_total=$((worker_total + 1))
-            [ "$tcp_ok" -eq 1 ] && worker_up=$((worker_up + 1))
+            [ "$tls_ok" -eq 1 ] && worker_up=$((worker_up + 1))
         fi
     done < <(k8s_health_node_list)
 
@@ -991,7 +1028,9 @@ k8s_health_check_network() {
         host=$(echo "$endpoint_label" | sed -E 's#^https?://##; s#/.*$##; s#:.*$##')
         port=$(echo "$endpoint_label" | sed -nE 's#.*:([0-9]+).*#\1#p')
         [ -z "$port" ] && port=6443
-        if k8s_health_tcp_open "$host" "$port" 2; then
+        # TLS-handshake, inte TCP-connect: TCP-connect lyckas i det här nätet
+        # även för adresser där ingen server finns.
+        if k8s_health_tls_handshake "$host" "$port" 5; then
             echo -e "${K8S_HEALTH_GREEN}  ✓ kubeconfig-endpoint $endpoint_label svarar${K8S_HEALTH_RESET}"
         else
             echo -e "${K8S_HEALTH_RED}  ✗ kubeconfig-endpoint $endpoint_label svarar inte${K8S_HEALTH_RESET}"
@@ -1015,7 +1054,7 @@ k8s_health_check_network() {
         chost=$(echo "$configured_endpoint" | sed -E 's#^https?://##; s#/.*$##; s#:.*$##')
         cport=$(echo "$configured_endpoint" | sed -nE 's#.*:([0-9]+).*#\1#p')
         [ -z "$cport" ] && cport=6443
-        if k8s_health_tcp_open "$chost" "$cport" 2; then
+        if k8s_health_tls_handshake "$chost" "$cport" 5; then
             echo -e "${K8S_HEALTH_GREEN}  ✓ controlPlane-endpoint $configured_endpoint svarar${K8S_HEALTH_RESET}"
         else
             echo -e "${K8S_HEALTH_RED}  ✗ controlPlane-endpoint $configured_endpoint svarar inte${K8S_HEALTH_RESET}"
