@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/scripts/ai.sh"
 source "$SCRIPT_DIR/scripts/install.sh"
 source "$SCRIPT_DIR/scripts/config.sh"
 source "$SCRIPT_DIR/scripts/pxe.sh"
+source "$SCRIPT_DIR/scripts/pxe-flash.sh"
 source "$SCRIPT_DIR/scripts/ceph.sh"
 source "$SCRIPT_DIR/scripts/kubernetes.sh"
 source "$SCRIPT_DIR/scripts/update.sh"
@@ -183,6 +184,7 @@ main() {
                 case "$2 $3" in
                     "debug dhcp") main_pxe_debug_dhcp ;;
                     "debug tftp") main_pxe_debug_tftp ;;
+                    "flash") main_pxe_flash ;;
                     *) echo "Unknown pxe command: $2 $3" ;;
                 esac
                 ;;
@@ -603,6 +605,7 @@ show_help() {
     echo "PXE commands:"
     echo "  pxe debug dhcp"
     echo "  pxe debug tftp"
+    echo "  pxe flash            # flasha PXE-först-U-Boot till SD-kort i PXE-servern"
     echo "  backup pxe"
     echo "  setup pxe"
     echo ""
@@ -771,6 +774,7 @@ else
                 case "$2 $3" in
                     "debug dhcp") main_pxe_debug_dhcp ;;
                     "debug tftp") main_pxe_debug_tftp ;;
+                    "flash") main_pxe_flash ;;
                     *) echo "Unknown pxe command: $2 $3" ;;
                 esac
                 ;;
