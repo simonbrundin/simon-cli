@@ -181,11 +181,16 @@ main() {
             source) shift; main_source "$@" ;;
             s) shift; main_s "$@" ;;
             pxe)
-                case "$2 $3" in
-                    "debug dhcp") main_pxe_debug_dhcp ;;
-                    "debug tftp") main_pxe_debug_tftp ;;
+                case "$2" in
+                    debug)
+                        case "$3" in
+                            "dhcp") main_pxe_debug_dhcp ;;
+                            "tftp") main_pxe_debug_tftp ;;
+                            *) echo "Unknown pxe debug command: $3" ;;
+                        esac
+                        ;;
                     "flash") main_pxe_flash ;;
-                    *) echo "Unknown pxe command: $2 $3" ;;
+                    *) echo "Unknown pxe command: $2" ;;
                 esac
                 ;;
             backup)
@@ -771,11 +776,16 @@ else
             source) shift; main_source "$@" ;;
             s) shift; main_s "$@" ;;
             pxe)
-                case "$2 $3" in
-                    "debug dhcp") main_pxe_debug_dhcp ;;
-                    "debug tftp") main_pxe_debug_tftp ;;
+                case "$2" in
+                    debug)
+                        case "$3" in
+                            "dhcp") main_pxe_debug_dhcp ;;
+                            "tftp") main_pxe_debug_tftp ;;
+                            *) echo "Unknown pxe debug command: $3" ;;
+                        esac
+                        ;;
                     "flash") main_pxe_flash ;;
-                    *) echo "Unknown pxe command: $2 $3" ;;
+                    *) echo "Unknown pxe command: $2" ;;
                 esac
                 ;;
             backup)
