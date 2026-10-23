@@ -67,7 +67,16 @@ assert_equals "31.2" "$(pxe_flash_bytes_to_gb 33554432000)" "bytes_to_gb: 31.2 G
 assert_equals "0.0" "$(pxe_flash_bytes_to_gb)" "bytes_to_gb: tomt argument"
 
 # --- pxe_flash_device_choices ----------------------------------------------
-raw=$'sda|128035676160|Intenso SSD|usb|0|0|systemdisk\nsdb|33554432000|SanDisk|usb|1|0|\nsdc|0|Storage Device|usb|1|0|\nsdd|1073741824||usb|1|0|'
+# Fält n på rad n i en lista av pipe-kodade rader.
+choice_field() {
+    printf '%s\n' "$1" | sed -n "$2p" | cut -d'|' -f"$3"
+}
+
+raw=""
+raw+="sda|128035676160|Intenso SSD|usb|0|0|systemdisk"$'\n'
+raw+="sdb|33554432000|SanDisk|usb|1|0|"$'\n'
+raw+="sdc|0|Storage Device|usb|1|0|"$'\n'
+raw+="sdd|1073741824||usb|1|0|"
 choices=$(pxe_flash_device_choices "$raw")
 
 assert_contains "$choices" "/dev/sda" "choices: sda finns"
@@ -80,10 +89,10 @@ assert_contains "$choices" "okänd modell" "choices: tom modell får platshålla
 assert_equals "4" "$(printf '%s\n' "$choices" | wc -l)" "choices: en rad per enhet"
 
 # Etiketten ligger i fjärde fältet, metadatan i de tre första.
-assert_equals "/dev/sdb" "$(printf '%s\n' "$choices" | sed -n 2p | cut -d'|' -f1)" "choices: fält 1 är sökväg"
-assert_equals "33554432000" "$(printf '%s\n' "$choices" | sed -n 2p | cut -d'|' -f2)" "choices: fält 2 är storlek"
-assert_equals "" "$(printf '%s\n' "$choices" | sed -n 2p | cut -d'|' -f3)" "choices: fält 3 är tom utan markör"
-assert_equals "systemdisk" "$(printf '%s\n' "$choices" | sed -n 1p | cut -d'|' -f3)" "choices: fält 3 är markör"
+assert_equals "/dev/sdb" "$(choice_field "$choices" 2 1)" "choices: fält 1 är sökväg"
+assert_equals "33554432000" "$(choice_field "$choices" 2 2)" "choices: fält 2 är storlek"
+assert_equals "" "$(choice_field "$choices" 2 3)" "choices: fält 3 är tom utan markör"
+assert_equals "systemdisk" "$(choice_field "$choices" 1 3)" "choices: fält 3 är markör"
 
 # Loop- och ram-enheter filtreras bort redan i uppslagssteget på servern,
 # men tomma rader ska ändå ignoreras.
@@ -127,6 +136,51 @@ if [ $? -eq 0 ] && [ -d "$HOME/infrastructure/pxe/Bootloaders" ]; then
     echo "ℹ️  bootloaders_dir: faller tillbaka på \$HOME/infrastructure"
 fi
 rm -rf "$tmp_repo"
+
+# --- fälthantering ---------------------------------------------------------
+assert_equals "b" "$(pxe_flash_field 'a|b|c' 2)" "field: fält 2"
+assert_equals "c" "$(pxe_flash_field 'a|b|c' 3)" "field: fält 3"
+assert_equals "a|b|c" "$(pxe_flash_join_fields a b c)" "join_fields: sätter ihop fält"
+assert_equals "a||c" "$(pxe_flash_join_fields a "" c)" "join_fields: tomt fält behålls"
+
+# --- pxe_flash_device_flags -------------------------------------------------
+assert_contains "$(pxe_flash_device_flags usb 1 0 '' 100)" "removable" "device_flags: removable"
+assert_contains "$(pxe_flash_device_flags usb 1 0 '' 100)" "usb" "device_flags: usb"
+flags=$(pxe_flash_device_flags usb 0 0 systemdisk 100)
+assert_contains "$flags" "SYSTEMDISK" "device_flags: systemdisk"
+assert_contains "$(pxe_flash_device_flags usb 1 0 '' 0)" "INGEN-MEDIA" "device_flags: ingen media"
+flags=$(pxe_flash_device_flags '' 0 0 '' 100)
+assert_not_contains "$flags" "removable" "device_flags: inga flaggor"
+
+# --- pxe_flash_device_label -------------------------------------------------
+label=$(pxe_flash_device_label sdb 33554432000 SanDisk 'usb ')
+assert_contains "$label" "31.2 GB" "device_label: storlek"
+label=$(pxe_flash_device_label sdb 0 '' '')
+assert_contains "$label" "okänd modell" "device_label: modellplatshållare"
+assert_contains "$(pxe_flash_device_label sdb 100 '' '')" "/dev/sdb" "device_label: sökväg"
+
+# --- pxe_flash_board_manual_hint -------------------------------------------
+assert_equals "$bootloaders/Raspberry Pi 4/set-pxe-first.sh --apply" \
+    "$(pxe_flash_board_manual_hint "$bootloaders" "Raspberry Pi 4")" "manual_hint: Pi4"
+assert_fails "manual_hint: Rock 4C+ har ingen manuell åtgärd" \
+    pxe_flash_board_manual_hint "$bootloaders" "Radxa Rock 4C+"
+
+# --- pxe_flash_sectors_for_file --------------------------------------------
+tmp_file=$(mktemp)
+printf 'x' > "$tmp_file"
+assert_equals "1" "$(pxe_flash_sectors_for_file "$tmp_file")" "sectors_for_file: 1 byte -> 1 sektor"
+printf '%1024s' '' > "$tmp_file"
+sectors=$(pxe_flash_sectors_for_file "$tmp_file")
+assert_equals "2" "$sectors" "sectors_for_file: 1024 byte -> 2 sektorer"
+rm -f "$tmp_file"
+
+# --- pxe_flash_compare_sha --------------------------------------------------
+assert_equals "0" \
+    "$(pxe_flash_compare_sha /dev/sdb abc123 abc123 >/dev/null 2>&1; echo $?)" \
+    "compare_sha: lika hash godkänns"
+assert_equals "1" \
+    "$(pxe_flash_compare_sha /dev/sdb abc123 def456 >/dev/null 2>&1; echo $?)" \
+    "compare_sha: olika hash avvisas"
 
 # --- sammanfattning --------------------------------------------------------
 echo

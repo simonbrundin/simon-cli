@@ -6,30 +6,48 @@
 # Modulen är uppdelad i små funktioner med ett ansvar vardera. main_pxe_flash
 # orchestrerar dem och innehåller ingen affärslogik.
 #
-#   pxe_flash_bootloaders_dir      hitta Bootloaders-katalogen i infra-repot
-#   pxe_flash_require_host         kontrollera att servern är nåbar
-#   pxe_flash_remote_devices       lista blockenheter på PXE-servern
-#   pxe_flash_device_choices       rådata -> val-lista (fzf-rad per enhet)
-#   pxe_flash_print_devices        visa enhetslistan
-#   pxe_flash_select_device        välj kort + spärrar systemdisk/media
-#   pxe_flash_select_board         välj datortyp
-#   pxe_flash_board_image          datortyp -> U-Boot-image
-#   pxe_flash_explain_no_image     förklara board utan bootloader-image
-#   pxe_flash_verify_image         verifiera bilden innan flash
-#   pxe_flash_confirm              bekräftelse
-#   pxe_flash_unmount_partitions   avmontera partitioner på kortet
-#   pxe_flash_copy_image           kopiera bilden till servern
-#   pxe_flash_write_image          skriv bilden med dd
-#   pxe_flash_cleanup              ta bort temporär fil på servern
-#   pxe_flash_verify_written       jämför sha256 mellan källa och kort
-#   pxe_flash_print_summary        slutrapport
+#   pxe_flash_error/ok/info          presentationshjälpare
+#   pxe_flash_bytes_to_gb            formatering av storlek
+#   pxe_flash_field/join_fields      läs och skriv pipe-delimited fält
+#   pxe_flash_select_with_fzf        gemensam fzf-hjälpare
+#   pxe_flash_bootloaders_dir        hitta Bootloaders-katalogen i infra-repot
+#   pxe_flash_board_image            datortyp -> U-Boot-image
+#   pxe_flash_board_manual_hint      datortyp -> manuell åtgärd
+#   pxe_flash_remote_devices         lista blockenheter på PXE-servern
+#   pxe_flash_device_flags           flaggor för en enhet
+#   pxe_flash_device_label           etikett för en enhet
+#   pxe_flash_device_choices         rådata -> val-lista (fzf-rad per enhet)
+#   pxe_flash_print_devices          visa enhetslistan
+#   pxe_flash_choose_device          välj kort i fzf
+#   pxe_flash_assert_device_is_safe  spärrar systemdisk och tom media
+#   pxe_flash_select_device          välj + spärr
+#   pxe_flash_select_board           välj datortyp
+#   pxe_flash_explain_no_image       förklara board utan bootloader-image
+#   pxe_flash_verify_image           verifiera bilden innan flash
+#   pxe_flash_confirm                bekräftelse
+#   pxe_flash_require_host           kontrollera att servern är nåbar
+#   pxe_flash_unmount_partitions     avmontera partitioner på kortet
+#   pxe_flash_copy_image             kopiera bilden till servern
+#   pxe_flash_write_image            skriv bilden med dd
+#   pxe_flash_cleanup                ta bort temporär fil på servern
+#   pxe_flash_sectors_for_file       filstorlek -> antal sektorer
+#   pxe_flash_remote_sha             sha256 av det skrivna området
+#   pxe_flash_compare_sha            jämför och rapportera
+#   pxe_flash_verify_written         verifiera det skrivna kortet
+#   pxe_flash_print_summary          slutrapport
 # ---------------------------------------------------------------------------
 
 # Rockchip-bootROM:en söker efter idbloader på sector 0x40 (byte 32768).
 # Hela image-filen innehåller både loader1 och loader2, så skrivningen görs
 # med seek=64. Se pxe/flash-uboot.sh i infrastructure-repot.
 PXE_FLASH_SEEK=64
+PXE_FLASH_SECTOR_SIZE=512
+PXE_FLASH_BYTES_PER_GB=1073741824
 PXE_FLASH_REMOTE_DIR="/tmp/pxe-flash"
+
+# Delimiter mellan fält i de pipe-kodade raderna. Inte tab: bash räknar tab
+# som IFS-whitespace och skulle kollapsa tomma fält (t.ex. tom markör).
+PXE_FLASH_FIELD_SEP="|"
 
 # --- presentationshjälpare -------------------------------------------------
 
@@ -46,7 +64,43 @@ pxe_flash_info() {
 }
 
 pxe_flash_bytes_to_gb() {
-    awk -v bytes="${1:-0}" 'BEGIN {printf "%.1f", bytes/1073741824}'
+    awk -v bytes="${1:-0}" -v per_gb="$PXE_FLASH_BYTES_PER_GB" \
+        'BEGIN {printf "%.1f", bytes/per_gb}'
+}
+
+# --- fälthantering ---------------------------------------------------------
+
+# Fält n (1-baserat) ur en pipe-kodad rad.
+pxe_flash_field() {
+    printf '%s' "$1" | cut -d"$PXE_FLASH_FIELD_SEP" -f"$2"
+}
+
+# Sätter ihop fält till en pipe-kodad rad.
+pxe_flash_join_fields() {
+    local out="" value
+    for value in "$@"; do
+        out="${out:+$out$PXE_FLASH_FIELD_SEP}$value"
+    done
+    printf '%s' "$out"
+}
+
+# Gemensam fzf-hjälpare. $4 är fältet som visas (tomt = hela raden).
+pxe_flash_select_with_fzf() {
+    local list="$1" prompt="$2" header="$3" visible_field="$4"
+    local selected
+
+    if [ -n "$visible_field" ]; then
+        selected=$(printf '%s\n' "$list" | fzf --delimiter="$PXE_FLASH_FIELD_SEP" \
+            --with-nth="$visible_field" --prompt="$prompt" --header="$header")
+    else
+        selected=$(printf '%s\n' "$list" | fzf --prompt="$prompt" --header="$header")
+    fi
+
+    if [ -z "$selected" ]; then
+        echo "Avbrut."
+        return 1
+    fi
+    printf '%s\n' "$selected"
 }
 
 # --- uppslag ---------------------------------------------------------------
@@ -80,6 +134,19 @@ pxe_flash_board_image() {
     esac
 }
 
+# Manuell åtgärd för boardar som inte kan flashas. Returnerar 1 om ingen finns.
+pxe_flash_board_manual_hint() {
+    local bootloaders="$1" board="$2"
+    case "$board" in
+        "Raspberry Pi 4")
+            printf '%s\n' "$bootloaders/Raspberry Pi 4/set-pxe-first.sh --apply"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # --- enhetslistning --------------------------------------------------------
 
 # Blockenheter på servern, en rad per enhet:
@@ -89,7 +156,8 @@ pxe_flash_remote_devices() {
 root_src=$(findmnt -n -o SOURCE / 2>/dev/null)
 root_disk=$(lsblk -ndo PKNAME "$root_src" 2>/dev/null | head -1)
 lsblk -d -b -P -o NAME,SIZE,RM,HOTPLUG,TRAN,MODEL 2>/dev/null | while IFS= read -r line; do
-    field() { printf '%s\n' "$line" | grep -o "$1=\"[^\"]*\"" | head -1 | sed "s/^$1=\"//;s/\"$//"; }
+    field() { printf '%s\n' "$line" | grep -o "$1=\"[^\"]*\"" | head -1 \
+        | sed "s/^$1=\"//;s/\"$//"; }
     name=$(field NAME)
     size=$(field SIZE)
     case "$name" in
@@ -106,23 +174,35 @@ done
 REMOTE_SCRIPT
 }
 
+# Flaggor som beskriver en enhet för listan.
+pxe_flash_device_flags() {
+    local tran="$1" rm_flag="$2" hot="$3" marker="$4" size="$5"
+    local flags=""
+    [ "$rm_flag" = "1" ] && flags="${flags}removable "
+    [ "$hot" = "1" ] && flags="${flags}hotplug "
+    [ "$tran" = "usb" ] && flags="${flags}usb "
+    [ "$marker" = "systemdisk" ] && flags="${flags}SYSTEMDISK "
+    [ "${size:-0}" -eq 0 ] && flags="${flags}INGEN-MEDIA "
+    printf '%s' "$flags"
+}
+
+# Etikett som visas i listan och i fzf.
+pxe_flash_device_label() {
+    local name="$1" size="$2" model="$3" flags="$4"
+    printf '/dev/%-8s %8s GB  %-24s %s' \
+        "$name" "$(pxe_flash_bytes_to_gb "$size")" "${model:-okänd modell}" "$flags"
+}
+
 # Rådata -> en fzf-rad per enhet: path|size|marker|etikett
-# Delimiter är "|" och inte tab: bash räknar tab som IFS-whitespace och
-# skulle kollapsa tomma fält (t.ex. tom markör).
 pxe_flash_device_choices() {
     local raw="$1"
-    local name size model tran rm_flag hot marker size_gb flags label
+    local name size model tran rm_flag hot marker flags label
     while IFS='|' read -r name size model tran rm_flag hot marker; do
         [ -z "$name" ] && continue
-        size_gb=$(pxe_flash_bytes_to_gb "$size")
-        flags=""
-        [ "$rm_flag" = "1" ] && flags="${flags}removable "
-        [ "$hot" = "1" ] && flags="${flags}hotplug "
-        [ "$tran" = "usb" ] && flags="${flags}usb "
-        [ "$marker" = "systemdisk" ] && flags="${flags}SYSTEMDISK "
-        [ "${size:-0}" -eq 0 ] && flags="${flags}INGEN-MEDIA "
-        label=$(printf '/dev/%-8s %8s GB  %-24s %s' "$name" "$size_gb" "${model:-okänd modell}" "$flags")
-        printf '/dev/%s|%s|%s|%s\n' "$name" "$size" "$marker" "$label"
+        flags=$(pxe_flash_device_flags "$tran" "$rm_flag" "$hot" "$marker" "$size")
+        label=$(pxe_flash_device_label "$name" "$size" "$model" "$flags")
+        pxe_flash_join_fields "/dev/$name" "$size" "$marker" "$label"
+        echo
     done <<< "$raw"
 }
 
@@ -131,7 +211,29 @@ pxe_flash_print_devices() {
     choices=$(pxe_flash_device_choices "$1")
     [ -z "$choices" ] && return 0
     echo "Blockenheter:"
-    printf '%s\n' "$choices" | cut -d'|' -f4 | sed 's/^/  /'
+    printf '%s\n' "$choices" | while IFS='|' read -r _ _ _ label; do
+        echo "  $label"
+    done
+}
+
+# Väljer ett kort i fzf. Returnerar den valda raden.
+pxe_flash_choose_device() {
+    local host="$1" choices="$2"
+    pxe_flash_select_with_fzf "$choices" 'SD-kort> ' "Välj microSD-kort i $host" 4
+}
+
+# Spärrar som gör att vi aldrig skriver till fel enhet.
+pxe_flash_assert_device_is_safe() {
+    local path="$1" size="$2" marker="$3"
+
+    if [ "$marker" = "systemdisk" ]; then
+        pxe_flash_error "$path är serverns systemdisk - vill inte skriva U-Boot där"
+        return 1
+    fi
+    if [ "${size:-0}" -eq 0 ]; then
+        pxe_flash_error "Ingen media i $path - sätt i kortet och kör om"
+        return 1
+    fi
 }
 
 # Väljer ett kort. Skriver ut "path|size|marker" för valet.
@@ -145,25 +247,13 @@ pxe_flash_select_device() {
         return 1
     fi
 
-    selected=$(printf '%s\n' "$choices" | fzf --delimiter='|' --with-nth=4 \
-        --prompt='SD-kort> ' --header="Välj microSD-kort i $host")
-    if [ -z "$selected" ]; then
-        echo "Avbrut."
-        return 1
-    fi
-
+    selected=$(pxe_flash_choose_device "$host" "$choices") || return 1
     IFS='|' read -r path size marker label <<< "$selected"
 
-    if [ "$marker" = "systemdisk" ]; then
-        pxe_flash_error "$path är serverns systemdisk - vill inte skriva U-Boot där"
-        return 1
-    fi
-    if [ "${size:-0}" -eq 0 ]; then
-        pxe_flash_error "Ingen media i $path - sätt i kortet och kör om"
-        return 1
-    fi
+    pxe_flash_assert_device_is_safe "$path" "$size" "$marker" || return 1
 
-    printf '%s|%s|%s\n' "$path" "$size" "$marker"
+    pxe_flash_join_fields "$path" "$size" "$marker"
+    echo
 }
 
 # --- val och bekräftelse ---------------------------------------------------
@@ -174,26 +264,25 @@ pxe_flash_select_board() {
         "Radxa Rock 4SE"
         "Raspberry Pi 4"
     )
-    local board
-    board=$(printf '%s\n' "${boards[@]}" | fzf --prompt='Datortyp> ' \
-        --header="Vilken dator ska kortet flashas för?")
-    if [ -z "$board" ]; then
-        echo "Avbrut."
-        return 1
-    fi
-    printf '%s\n' "$board"
+    pxe_flash_select_with_fzf "$(printf '%s\n' "${boards[@]}")" 'Datortyp> ' \
+        "Vilken dator ska kortet flashas för?" ""
 }
 
 pxe_flash_explain_no_image() {
     local board="$1" bootloaders="$2"
+    local hint
+
     echo
     echo "$board har bootloader i ROM - inget skrivs till kortet."
-    echo "För PXE-först sätts UEFI-bootordningen på noden med efibootmgr:"
-    echo "  $bootloaders/Raspberry Pi 4/set-pxe-first.sh --apply"
+    if hint=$(pxe_flash_board_manual_hint "$bootloaders" "$board"); then
+        echo "För PXE-först sätts UEFI-bootordningen på noden med efibootmgr:"
+        echo "  $hint"
+    fi
 }
 
 pxe_flash_verify_image() {
     local bootloaders="$1" image="$2"
+
     if [ ! -f "$image" ]; then
         pxe_flash_error "Bilden saknas: $image"
         echo "Bygg den med pxe/Bootloaders/build-mainline-uboot.sh" >&2
@@ -210,6 +299,8 @@ pxe_flash_verify_image() {
 
 pxe_flash_confirm() {
     local device="$1" board="$2" image="$3"
+    local answer
+
     echo
     echo "Kort : $device"
     echo "Typ  : $board"
@@ -219,7 +310,6 @@ pxe_flash_confirm() {
     echo "En giltig U-Boot i eMMC/SPI vinner över kortet."
     echo
     printf "Skriva U-Boot till %s? [nej/ja]: " "$device"
-    local answer
     read -r answer
     if [ "$answer" != "ja" ]; then
         echo "Avbrut."
@@ -252,6 +342,7 @@ REMOTE_SCRIPT
 
 pxe_flash_copy_image() {
     local host="$1" image="$2"
+
     echo "Kopierar bilden till $host..."
     ssh -n -o ConnectTimeout=5 "$host" -T "sh -c 'mkdir -p $PXE_FLASH_REMOTE_DIR'" || return 1
     scp -q "$image" "$host:$PXE_FLASH_REMOTE_DIR/u-boot.bin" || {
@@ -262,8 +353,13 @@ pxe_flash_copy_image() {
 
 pxe_flash_write_image() {
     local host="$1" device="$2"
+    local remote_cmd
+
     echo "Skriver till $device (seek=$PXE_FLASH_SEEK)..."
-    ssh -t "$host" "sh -c 'sudo dd if=$PXE_FLASH_REMOTE_DIR/u-boot.bin of=$device bs=512 seek=$PXE_FLASH_SEEK conv=fsync status=progress'" || {
+    remote_cmd="sudo dd if=$PXE_FLASH_REMOTE_DIR/u-boot.bin of=$device"
+    remote_cmd="$remote_cmd bs=$PXE_FLASH_SECTOR_SIZE seek=$PXE_FLASH_SEEK"
+    remote_cmd="$remote_cmd conv=fsync status=progress"
+    ssh -t "$host" "sh -c '$remote_cmd'" || {
         pxe_flash_error "Skrivningen misslyckades"
         return 1
     }
@@ -271,22 +367,35 @@ pxe_flash_write_image() {
 
 pxe_flash_cleanup() {
     local host="$1"
-    ssh -n -o ConnectTimeout=5 "$host" -T "sh -c 'rm -f $PXE_FLASH_REMOTE_DIR/u-boot.bin'" >/dev/null 2>&1
+    ssh -n -o ConnectTimeout=5 "$host" -T \
+        "sh -c 'rm -f $PXE_FLASH_REMOTE_DIR/u-boot.bin'" >/dev/null 2>&1
 }
 
-# Läser tillbaka det skrivna området och jämför mot källfilen.
-pxe_flash_verify_written() {
-    local host="$1" device="$2" image="$3"
-    local sectors local_sha remote_sha
+# --- verifiering av det skrivna kortet -------------------------------------
 
-    echo "Verifierar..."
-    sectors=$(( ($(stat -c%s "$image") + 511) / 512 ))
-    local_sha=$(sha256sum "$image" | cut -d' ' -f1)
-    remote_sha=$(ssh -o ConnectTimeout=5 "$host" -T 'sh -s' <<REMOTE_SCRIPT
-sudo dd if=$device bs=512 skip=$PXE_FLASH_SEEK count=$sectors status=none | sha256sum | cut -d' ' -f1
+# Antal sektorer som en fil täcker (avrundat uppåt).
+pxe_flash_sectors_for_file() {
+    local bytes
+    bytes=$(stat -c%s "$1")
+    echo $(( (bytes + PXE_FLASH_SECTOR_SIZE - 1) / PXE_FLASH_SECTOR_SIZE ))
+}
+
+# sha256 av det område som skrivdes på kortet.
+pxe_flash_remote_sha() {
+    local host="$1" device="$2" sectors="$3"
+    local sha
+
+    sha=$(ssh -o ConnectTimeout=5 "$host" -T 'sh -s' <<REMOTE_SCRIPT
+sudo dd if=$device bs=$PXE_FLASH_SECTOR_SIZE skip=$PXE_FLASH_SEEK count=$sectors status=none \
+    | sha256sum | cut -d' ' -f1
 REMOTE_SCRIPT
 )
-    remote_sha=$(printf '%s' "$remote_sha" | tr -d '[:space:]')
+    printf '%s' "$sha" | tr -d '[:space:]'
+}
+
+# Jämför och rapporterar.
+pxe_flash_compare_sha() {
+    local device="$1" local_sha="$2" remote_sha="$3"
 
     if [ "$local_sha" != "$remote_sha" ]; then
         pxe_flash_error "Verifieringen misslyckades"
@@ -299,6 +408,18 @@ REMOTE_SCRIPT
     echo "  sha256: $local_sha"
 }
 
+pxe_flash_verify_written() {
+    local host="$1" device="$2" image="$3"
+    local sectors local_sha remote_sha
+
+    echo "Verifierar..."
+    sectors=$(pxe_flash_sectors_for_file "$image")
+    local_sha=$(sha256sum "$image" | cut -d' ' -f1)
+    remote_sha=$(pxe_flash_remote_sha "$host" "$device" "$sectors")
+
+    pxe_flash_compare_sha "$device" "$local_sha" "$remote_sha"
+}
+
 pxe_flash_print_summary() {
     echo
     echo "Nästa steg: sätt kortet i noden och starta den."
@@ -309,7 +430,7 @@ pxe_flash_print_summary() {
 
 main_pxe_flash() {
     local host="${PXE_HOST:-pxe}"
-    local bootloaders raw record device board image
+    local bootloaders raw record device board image write_status
 
     pxe_flash_info "=== Flasha PXE-först-kort ==="
     echo "Server: $host"
@@ -331,7 +452,7 @@ main_pxe_flash() {
     pxe_flash_print_devices "$raw"
 
     record=$(pxe_flash_select_device "$host" "$raw") || return 1
-    IFS='|' read -r device _ _ <<< "$record"
+    device=$(pxe_flash_field "$record" 1)
 
     board=$(pxe_flash_select_board) || return 1
 
@@ -347,7 +468,7 @@ main_pxe_flash() {
     pxe_flash_copy_image "$host" "$image" || return 1
 
     pxe_flash_write_image "$host" "$device"
-    local write_status=$?
+    write_status=$?
     pxe_flash_cleanup "$host"
     [ "$write_status" -eq 0 ] || return 1
 
