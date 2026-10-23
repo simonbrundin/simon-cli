@@ -182,6 +182,29 @@ assert_equals "1" \
     "$(pxe_flash_compare_sha /dev/sdb abc123 def456 >/dev/null 2>&1; echo $?)" \
     "compare_sha: olika hash avvisas"
 
+# --- pxe_flash_wipe_script -------------------------------------------------
+# Nollställningen körs på servern, men själva scriptet är ren text och
+# kan därför testas här.
+wipe_script=$(pxe_flash_wipe_script /dev/sdb)
+assert_contains "$wipe_script" 'dev="/dev/sdb"' "wipe_script: använder rätt enhet"
+assert_contains "$wipe_script" "sgdisk --zap-all" "wipe_script: raderar partitionstabellen"
+assert_contains "$wipe_script" "wipefs -a" "wipe_script: raderar filesystem-signaturer"
+assert_contains "$wipe_script" "if=/dev/zero" "wipe_script: nollställer med dd"
+assert_contains "$wipe_script" "blockdev --getsize64" "wipe_script: läser enhetens storlek"
+assert_contains "$wipe_script" "seek=\$(( mb - wipe_mb ))" \
+    "wipe_script: nollställer slutet av kortet"
+assert_contains "$wipe_script" "count=\$wipe_mb" \
+    "wipe_script: nollställer $PXE_FLASH_WIPE_MB MB i början"
+assert_contains "$wipe_script" "wipe_mb=$PXE_FLASH_WIPE_MB" \
+    "wipe_script: wipe_mb definieras i fjärrscriptet"
+
+# Enheten ska alltid sättas i variabeln dev - inte hårdkodas på flera ställen.
+assert_equals "1" \
+    "$(printf '%s' "$wipe_script" | grep -c '/dev/sdb')" \
+    "wipe_script: enheten nämns bara i definitionen av dev"
+assert_not_contains "$wipe_script" 'of=/dev/sdb' \
+    "wipe_script: dd skriver via \$dev, inte hårdkodat"
+
 # --- sammanfattning --------------------------------------------------------
 echo
 if [ "$failures" -eq 0 ]; then

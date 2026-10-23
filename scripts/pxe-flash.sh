@@ -27,6 +27,8 @@
 #   pxe_flash_confirm                bekräftelse
 #   pxe_flash_require_host           kontrollera att servern är nåbar
 #   pxe_flash_unmount_partitions     avmontera partitioner på kortet
+#   pxe_flash_wipe_script            fjärrscript som nollställer kortet
+#   pxe_flash_wipe_partitions        nollställ partitionstabel och artefakter
 #   pxe_flash_copy_image             kopiera bilden till servern
 #   pxe_flash_write_image            skriv bilden med dd
 #   pxe_flash_cleanup                ta bort temporär fil på servern
@@ -44,6 +46,11 @@ PXE_FLASH_SEEK=64
 PXE_FLASH_SECTOR_SIZE=512
 PXE_FLASH_BYTES_PER_GB=1073741824
 PXE_FLASH_REMOTE_DIR="/tmp/pxe-flash"
+
+# Antal MB som nollställs i början och slutet av kortet. 8 MB räcker för
+# GPT-headern, backup-GPT och de första utrymmena för gamla bootloaders.
+PXE_FLASH_WIPE_MB=8
+PXE_FLASH_BYTES_PER_MB=1048576
 
 # Delimiter mellan fält i de pipe-kodade raderna. Inte tab: bash räknar tab
 # som IFS-whitespace och skulle kollapsa tomma fält (t.ex. tom markör).
@@ -309,6 +316,9 @@ pxe_flash_confirm() {
     echo "BootROM (RK3399) söker i ordningen: SPI-flash → eMMC → SD-kort → USB"
     echo "En giltig U-Boot i eMMC/SPI vinner över kortet."
     echo
+    echo "Kortet nollställs först: partitionstabellen och all annan data raderas,"
+    echo "så att bara U-Boot finns kvar att boota från."
+    echo
     printf "Skriva U-Boot till %s? [nej/ja]: " "$device"
     read -r answer
     if [ "$answer" != "ja" ]; then
@@ -337,6 +347,53 @@ lsblk -lnpo NAME,TYPE $device 2>/dev/null | while read -r pname ptype; do
         fi
     fi
 done
+REMOTE_SCRIPT
+}
+
+# Fjärrscript som nollställer kortet före skrivning.
+#
+# Varför: bara skriva U-Boot-image över ett befintligt kort lämnar den
+# gamla partitionstabellen och en EFI-partition kvar. Då kan U-Boot hitta
+# en gammal bootloader (t.ex. en installerad Talos) och starta den i stället
+# för vår PXE-image. Rätt sista kort ska bara innehålla U-Boot.
+#
+# Returneras som text så att innehållet kan testas utan att röra en disk.
+pxe_flash_wipe_script() {
+    local device="$1"
+    local wipe_mb="$PXE_FLASH_WIPE_MB"
+
+    cat <<EOF
+set -e
+dev="$device"
+wipe_mb=$PXE_FLASH_WIPE_MB
+
+# 1. Partitionstabell (GPT/MBR). sgdisk nollställer även backup-GPT.
+if command -v sgdisk >/dev/null 2>&1; then
+    sudo sgdisk --zap-all "\$dev" || true
+fi
+
+# 2. Filesystem-signaturer.
+sudo wipefs -a "\$dev" || true
+
+# 3. Början och slutet: gamla bootloaders, GPT-artefakter, restdata.
+size=\$(sudo blockdev --getsize64 "\$dev")
+mb=\$(( size / $PXE_FLASH_BYTES_PER_MB ))
+sudo dd if=/dev/zero of="\$dev" bs=$PXE_FLASH_BYTES_PER_MB count=\$wipe_mb conv=fsync status=none
+if [ "\$mb" -gt \$(( wipe_mb * 2 )) ]; then
+    sudo dd if=/dev/zero of="\$dev" bs=$PXE_FLASH_BYTES_PER_MB \\
+        seek=\$(( mb - wipe_mb )) count=\$wipe_mb conv=fsync status=none
+fi
+sync
+EOF
+}
+
+# Nollställer kortet på PXE-servern.
+pxe_flash_wipe_partitions() {
+    local host="$1" device="$2"
+
+    echo "Nollställer partitionstabell och gamla artefakter på $device..."
+    ssh -o ConnectTimeout=5 "$host" -T 'sh -s' <<REMOTE_SCRIPT
+$(pxe_flash_wipe_script "$device")
 REMOTE_SCRIPT
 }
 
@@ -424,6 +481,7 @@ pxe_flash_print_summary() {
     echo
     echo "Nästa steg: sätt kortet i noden och starta den."
     echo "U-Boot försöker nätverksboot (PXE) först via boot_script_dhcp=talos/bsc."
+    echo "Kortet är nollställt - det innehåller bara U-Boot, ingen partitionstabell."
 }
 
 # --- orchestration ----------------------------------------------------------
@@ -465,6 +523,7 @@ main_pxe_flash() {
     pxe_flash_confirm "$device" "$board" "$image" || return 1
 
     pxe_flash_unmount_partitions "$host" "$device"
+    pxe_flash_wipe_partitions "$host" "$device" || return 1
     pxe_flash_copy_image "$host" "$image" || return 1
 
     pxe_flash_write_image "$host" "$device"
