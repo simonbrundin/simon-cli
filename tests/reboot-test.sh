@@ -123,6 +123,19 @@ assert_contains "$(reboot_node_names "$nodes_yaml")" "worker-1" \
 
 rm -f "$nodes_yaml"
 
+# --- usage ------------------------------------------------------------------
+usage=$(reboot_usage)
+assert_contains "$usage" "simon reboot all" "usage: beskriver läget 'all'"
+assert_contains "$usage" "simon reboot list" "usage: beskriver läget 'list'"
+assert_contains "$usage" "simon reboot poe" "usage: beskriver läget 'poe'"
+assert_contains "$usage" "--drain" "usage: beskriver flaggan --drain"
+assert_contains "$usage" "--force" "usage: beskriver flaggan --force"
+assert_contains "$usage" "--powercycle" "usage: beskriver flaggan --powercycle"
+assert_contains "$usage" "--no-wait" "usage: beskriver flaggan --no-wait"
+assert_contains "$usage" "nodes.yaml" "usage: förklarar var nodnamnet slås upp"
+assert_contains "$(reboot_command --help)" "ANVÄNDNING" \
+    "reboot_command --help skriver ut hjälpen"
+
 # --- sammanfattning --------------------------------------------------------
 echo
 if [ "$failures" -eq 0 ]; then

@@ -9,6 +9,7 @@
 #   reboot_command              dispatcher (nod / all / list / poe)
 #   reboot_node_command         reboot av en enskild nod
 #   reboot_list_nodes           lista noder från nodes.yaml
+#   reboot_usage                hjälptxt för kommandot
 #   reboot_error/info/ok        presentationshjälpare
 #   reboot_nodes_yaml           sökväg till nodes.yaml
 #   reboot_is_ip                ser värdet ut som en IPv4-adress
@@ -180,19 +181,57 @@ reboot_node_command() {
     talosctl reboot -n "$ip" $talos_flags
 }
 
+reboot_usage() {
+    cat <<'HELP'
+simon reboot - starta om noder och nätverksenheter
+
+ANVÄNDNING
+  simon reboot <nodnamn|ip> [flaggor]   Starta om en Talos-nod
+  simon reboot all                       Starta om alla noder i klustret
+  simon reboot list                      Visa noder med IP, roll och PoE-port
+  simon reboot poe                       Starta om enheter via UniFi-PoE (fzf-meny)
+  simon reboot                           Samma som "simon reboot poe"
+
+NODER
+  Nodnamnet slås upp i talos/nodes.yaml i infrastructure-repotet, så
+  "simon reboot controlplane-1" räcker - du behöver inte IP:t. En IP-adress
+  fungerar också direkt ("simon reboot 10.10.10.11").
+
+  En omstart är graceful (kexec) om inget annat sägs: Talos startar om
+  kerneln i farten och noden behåller sin konfiguration och sitt medlemskap
+  i klustret.
+
+FLAGGOR (för en nod)
+  --drain                                Töm noden i Kubernetes först
+                                         (cordon + evict pods) innan omstart
+  --force                                Tvingad omstart, skippar kexec
+  --powercycle                           Omstart via strömbrytaren, skippar kexec
+  --no-wait                              Vänta inte på att noden är tillbaka
+
+  --drain är bra vid underhåll: workload evakueras till andra noder innan
+  noden startar om, så inga poddar blir avbrutna mitt i en deploy.
+
+EXEMPEL
+  simon reboot controlplane-1            Graceful omstart av controlplane-1
+  simon reboot worker-1 --drain          Töm worker-1:s pods och starta om den
+  simon reboot 10.10.10.11 --force       Tvingad omstart av noden med IP:t
+  simon reboot all                       Starta om hela klustret
+
+POE
+  "simon reboot" och "simon reboot poe" öppnar en lista över portarna på
+  switchen där du väljer enheter att strömsätta om. Det slår av PoE på
+  valda portar och startar dem igen efter en stund - används när en enhet
+  hänger sig och inte svarar.
+HELP
+}
+
 reboot_command() {
     case "${1:-}" in
         "") main_reboot ;;
         poe) main_reboot ;;
         all) main_talos_reboot_all ;;
         list) reboot_list_nodes ;;
-        --help|-h)
-            echo "Användning:"
-            echo "  simon reboot <nodnamn|ip> [--drain] [--force] [--powercycle] [--no-wait]"
-            echo "  simon reboot all"
-            echo "  simon reboot list"
-            echo "  simon reboot poe    (PoE-cykel via UniFi)"
-            ;;
+        --help|-h) reboot_usage ;;
         *) reboot_node_command "$@" ;;
     esac
 }
