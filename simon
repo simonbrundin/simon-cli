@@ -18,6 +18,7 @@ source "$SCRIPT_DIR/scripts/ceph.sh"
 source "$SCRIPT_DIR/scripts/kubernetes.sh"
 source "$SCRIPT_DIR/scripts/update.sh"
 source "$SCRIPT_DIR/scripts/unifi.sh"
+source "$SCRIPT_DIR/scripts/reboot.sh"
 source "$SCRIPT_DIR/scripts/photos.sh"
 source "$SCRIPT_DIR/scripts/network.sh"
 source "$SCRIPT_DIR/scripts/stow.sh"
@@ -94,7 +95,7 @@ main() {
             xfs) main_xfs ;;
             speed) main_speed ;;
             whois) main_whois ;;
-            reboot) main_reboot ;;
+            reboot) shift; reboot_command "$@" ;;
             edit)
                 case "$2" in
                     cron) main_edit_cron ;;
@@ -647,6 +648,12 @@ echo "AI commands:"
     echo "Tilt commands:"
     echo "  tilt restart       Restart Tilt & clear logs"
     echo ""
+    echo "Reboot commands:"
+    echo "  reboot <nodnamn>   Reboot en Talos-nod (t.ex. controlplane-1)"
+    echo "  reboot all         Reboot alla noder"
+    echo "  reboot list        Lista noder"
+    echo "  reboot poe         PoE-cykel via UniFi (fzf-meny)"
+    echo ""
     echo "Network commands:"
     echo "  trip <target>      Trace route to target"
     echo "  kill <port>        Kill process running on port"
@@ -686,7 +693,7 @@ else
             xfs) main_xfs ;;
             speed) main_speed ;;
             whois) main_whois ;;
-            reboot) main_reboot ;;
+            reboot) shift; reboot_command "$@" ;;
             push) main_push ;;
             edit)
                 case "$2" in
