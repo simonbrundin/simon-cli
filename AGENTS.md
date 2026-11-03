@@ -297,18 +297,19 @@ Tilt uses `tilt up -f /path/to/template/Tiltfile` and environment variables to r
 
 `simon dev` sets these environment variables for Tilt:
 
-| Variable           | Description                                      |
-| ------------------ | ------------------------------------------------ |
-| `TILT_LOCAL_ROOT`  | Local project root (where `tilt.yaml` lives)    |
-| `TILT_YAML_PATH`   | Path to project's `tilt.yaml`                    |
-| `TILT_REPO_NAME`   | Project/repo name (for Kind cluster naming)      |
-| `TILT_BRANCH`      | Git branch name                                  |
-| `TILT_PORT_OFFSET` | Unique port offset (`repo + branch` hash)        |
-| `TILT_PORT`        | Tilt UI port                                    |
+| Variable           | Description                                  |
+| ------------------ | -------------------------------------------- |
+| `TILT_LOCAL_ROOT`  | Local project root (where `tilt.yaml` lives) |
+| `TILT_YAML_PATH`   | Path to project's `tilt.yaml`                |
+| `TILT_REPO_NAME`   | Project/repo name (for Kind cluster naming)  |
+| `TILT_BRANCH`      | Git branch name                              |
+| `TILT_PORT_OFFSET` | Unique port offset (`repo + branch` hash)    |
+| `TILT_PORT`        | Tilt UI port                                 |
 
 ### Port Allocation
 
 Each project+branch combination gets a unique port:
+
 - Base port: `10350`
 - Offset: `cksum(repo_name + branch) % 100`
 - Example: `plan.main` → port 10447, `plan.feature-x` → different port
@@ -323,9 +324,9 @@ Projects using Tilt should have a `tilt.yaml` in their dev directory:
 resources:
   nuxt:
     type: dockerfile
-    image-name: nuxt-app                    # Must match deployment image
-    dockerfile: ../../src/nuxt             # Relative to tilt.yaml location
-    port: 3000                             # Container port
+    image-name: nuxt-app # Must match deployment image
+    dockerfile: ../../src/nuxt # Relative to tilt.yaml location
+    port: 3000 # Container port
 ```
 
 ### Adding New Projects
@@ -353,10 +354,12 @@ base/
 ```
 
 Projects using `resources: [../base]` automatically get:
+
 - **CloudNativePG** - PostgreSQL operator (namespace: cnpg-system)
 - **Gateway API** - Ingress API (CRDs only)
 
 To update shared infrastructure:
+
 1. Regenerate YAML: `helm template ... > shared/cnpg.yaml`
 2. Commit and push to repo-template
 
@@ -367,6 +370,7 @@ To update shared infrastructure:
 - **Image build fails**: Verify Dockerfile path in `tilt.yaml` is correct
 
 <!-- wiki:start -->
+
 ## Kunskaps-wiki
 
 Det här repot delar en gemensam kunskaps-wiki med alla andra repor.
